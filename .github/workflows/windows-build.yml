@@ -1,33 +1,44 @@
-name: Windows Build
+#include <JuceHeader.h>
+#include "MainComponent.h"
 
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
+class SkizoDroidLiveApplication : public juce::JUCEApplication
+{
+public:
+    const juce::String getApplicationName() override       { return "SkizoDroid Live"; }
+    const juce::String getApplicationVersion() override    { return "0.1.0"; }
 
-jobs:
-  build-windows:
-    runs-on: windows-latest
+    void initialise (const juce::String&) override
+    {
+        mainWindow.reset (new MainWindow (getApplicationName()));
+    }
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    void shutdown() override
+    {
+        mainWindow = nullptr;
+    }
 
-      - name: Checkout JUCE
-        uses: actions/checkout@v4
-        with:
-          repository: juce-framework/JUCE
-          path: JUCE
+    class MainWindow : public juce::DocumentWindow
+    {
+    public:
+        MainWindow (juce::String name)
+            : DocumentWindow (name,
+                              juce::Colours::black,
+                              DocumentWindow::allButtons)
+        {
+            setUsingNativeTitleBar (true);
+            setContentOwned (new MainComponent(), true);
+            centreWithSize (1000, 700);
+            setVisible (true);
+        }
 
-      - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -DJUCE_DIR="${{ github.workspace }}/JUCE"
+        void closeButtonPressed() override
+        {
+            JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+    };
 
-      - name: Build Release
-        run: cmake --build build --config Release
+private:
+    std::unique_ptr<MainWindow> mainWindow;
+};
 
-      - name: Upload Windows build
-        uses: actions/upload-artifact@v4
-        with:
-          name: SkizoDroidLive-Windows
-          path: build/SkizoDroidLive_artefacts/Release/**
+START_JUCE_APPLICATION (SkizoDroidLiveApplication)
