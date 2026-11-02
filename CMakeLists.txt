@@ -1,12 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
-project(SkizoDroidLive VERSION 0.1.0)
+
+project(SkizoDroidLive VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Point this to your JUCE checkout if JUCE is not installed system-wide.
-# Example: add_subdirectory(C:/JUCE JUCE)
-find_package(JUCE CONFIG REQUIRED)
+# JUCE can come either from GitHub Actions or from a local checkout.
+if(DEFINED JUCE_DIR)
+    add_subdirectory(${JUCE_DIR} JUCE)
+else()
+    find_package(JUCE CONFIG REQUIRED)
+endif()
 
 juce_add_gui_app(SkizoDroidLive
     PRODUCT_NAME "SkizoDroid Live"
