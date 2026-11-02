@@ -36,38 +36,91 @@ private:
 
     std::array<LoopTrack, numTracks> tracks;
     std::array<SceneClipMap, numScenes> scenes;
+    std::array<juce::String, numScenes> sceneNames;
+    std::array<int, numScenes> sceneBars;
+    std::array<juce::String, numTracks> trackNames;
 
     juce::AudioFormatManager formatManager;
     juce::MixerAudioSource mixer;
 
     juce::Label titleLabel;
     juce::Label statusLabel;
+    juce::Label projectLabel;
     juce::Label selectedSceneLabel;
     juce::Label bpmLabel;
+    juce::Label sceneNameLabel;
+    juce::Label sceneBarsLabel;
 
     juce::Slider bpmSlider;
+    juce::TextEditor sceneNameEditor;
+    juce::ComboBox sceneBarsBox;
+
+    juce::TextButton newProjectButton { "NEW PROJECT" };
+    juce::TextButton openProjectButton { "OPEN" };
+    juce::TextButton saveProjectButton { "SAVE" };
+    juce::TextButton saveAsProjectButton { "SAVE AS" };
 
     juce::TextButton playButton { "PLAY" };
     juce::TextButton stopButton { "STOP" };
 
+    juce::TextButton copySceneButton { "COPY SCENE" };
+    juce::TextButton pasteSceneButton { "PASTE SCENE" };
+    juce::TextButton clearSceneButton { "CLEAR SCENE" };
+
+    std::array<juce::TextEditor, numTracks> trackNameEditors;
     std::array<juce::TextButton, numTracks> loadButtons;
+    std::array<juce::TextButton, numTracks> clearButtons;
     std::array<juce::TextButton, numScenes> sceneButtons;
+
+    std::unique_ptr<juce::Drawable> logoDrawable;
+    juce::Rectangle<int> logoPanelBounds;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 
+    juce::File projectFile;
+    juce::File projectFolder;
+    juce::File audioFolder;
+
+    SceneClipMap copiedScene;
+    int copiedSceneBars = 4;
+    bool hasCopiedSceneClipboard = false;
+
     bool playing = false;
+    bool loadingProjectUi = false;
 
     int selectedScene = 0;
     int currentScene = 0;
     int queuedScene = -1;
 
     double currentSampleRate = 44100.0;
-    double samplesSinceBarStart = 0.0;
+    double samplesSinceSceneStart = 0.0;
+
+    void initialiseDefaults();
+
+    void newProject();
+    void openProject();
+    void saveProject();
+    void saveProjectAs();
+    bool saveProjectToFile (const juce::File& file);
+    bool loadProjectFromFile (const juce::File& file);
+    void resetProjectData();
+    void updateProjectLabel();
+
+    juce::File importAudioIntoProject (const juce::File& sourceFile);
+    juce::String getStoredPathForFile (const juce::File& file) const;
+    juce::File resolveStoredPath (const juce::String& storedPath) const;
 
     void selectSceneForEditing (int sceneIndex);
     void chooseLoopForTrack (int trackIndex);
+    void clearClipForTrack (int trackIndex);
+    void copySelectedScene();
+    void pasteSceneToSelected();
+    void clearSelectedScene();
+
     void refreshTrackButtons();
     void refreshSceneButtons();
+    void refreshSceneEditor();
+    void refreshTrackNameEditors();
 
     void triggerScene (int sceneIndex);
     void startSceneNow (int sceneIndex);
@@ -78,6 +131,7 @@ private:
 
     void updateStatus();
     double getSamplesPerBar() const;
+    double getSamplesPerScene (int sceneIndex) const;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };
