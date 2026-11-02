@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SkizoDroidLive VERSION 0.4.0 LANGUAGES C CXX)
+project(SkizoDroidLive VERSION 0.4.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,7 +13,7 @@ endif()
 
 juce_add_binary_data(SkizoDroidAssets
     SOURCES
-        Assets/skizodroid_logo_white.png
+        Assets/skizodroid_logo_header.png
 )
 
 juce_add_gui_app(SkizoDroidLive

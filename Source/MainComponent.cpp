@@ -36,12 +36,12 @@ MainComponent::MainComponent()
     initialiseDefaults();
 
     logoDrawable = juce::Drawable::createFromImageData (
-        BinaryData::skizodroid_logo_white_png,
-        BinaryData::skizodroid_logo_white_pngSize);
+        BinaryData::skizodroid_logo_header_png,
+        BinaryData::skizodroid_logo_header_pngSize);
 
-    titleLabel.setText ("SKIZODROID LIVE  V0.4", juce::dontSendNotification);
+    titleLabel.setText ("SkizoDroid Live", juce::dontSendNotification);
     titleLabel.setJustificationType (juce::Justification::centredLeft);
-    titleLabel.setFont (juce::FontOptions (28.0f, juce::Font::bold));
+    titleLabel.setFont (juce::FontOptions (30.0f, juce::Font::bold));
     addAndMakeVisible (titleLabel);
 
     statusLabel.setJustificationType (juce::Justification::centredLeft);
@@ -180,7 +180,7 @@ MainComponent::MainComponent()
         addAndMakeVisible (sceneButtons[i]);
     }
 
-    setSize (1500, 940);
+    setSize (1500, 900);
     setAudioChannels (0, 2);
 
     refreshTrackNameEditors();
@@ -270,61 +270,47 @@ void MainComponent::paint (juce::Graphics& g)
     g.setColour (juce::Colour::fromRGB (46, 46, 52));
     g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (16.0f), 10.0f, 2.0f);
 
-    g.setColour (juce::Colours::black);
-    g.fillRoundedRectangle (logoPanelBounds.toFloat(), 14.0f);
-    g.setColour (juce::Colour::fromRGB (58, 58, 62));
-    g.drawRoundedRectangle (logoPanelBounds.toFloat(), 14.0f, 2.0f);
-
     if (logoDrawable != nullptr)
-    {
-        auto logoBounds = logoPanelBounds.reduced (18);
-        logoDrawable->drawWithin (g,
-                                  logoBounds.toFloat(),
-                                  juce::RectanglePlacement::centred | juce::RectanglePlacement::onlyReduceInSize,
-                                  1.0f);
-    }
+        logoDrawable->drawWithin (g, headerLogoBounds.toFloat(), juce::RectanglePlacement::centred, 1.0f);
 }
 
 void MainComponent::resized()
 {
-    auto full = getLocalBounds().reduced (20);
+    auto area = getLocalBounds().reduced (20);
 
-    auto sidebar = full.removeFromLeft (250);
-    auto main = full;
+    auto header = area.removeFromTop (56);
+    headerLogoBounds = header.removeFromLeft (74).reduced (0, 4);
+    titleLabel.setBounds (header.removeFromLeft (330));
+    header.removeFromLeft (16);
+    selectedSceneLabel.setBounds (header);
 
-    logoPanelBounds = sidebar.removeFromTop (300).reduced (6);
-    sidebar.removeFromTop (8);
+    statusLabel.setBounds (area.removeFromTop (24));
 
-    copySceneButton.setBounds (sidebar.removeFromTop (36).reduced (6, 3));
-    pasteSceneButton.setBounds (sidebar.removeFromTop (36).reduced (6, 3));
-    clearSceneButton.setBounds (sidebar.removeFromTop (36).reduced (6, 3));
-
-    titleLabel.setBounds (main.removeFromTop (42));
-    statusLabel.setBounds (main.removeFromTop (24));
-
-    auto projectRow = main.removeFromTop (40);
+    auto projectRow = area.removeFromTop (40);
     newProjectButton.setBounds (projectRow.removeFromLeft (120).reduced (3));
     openProjectButton.setBounds (projectRow.removeFromLeft (80).reduced (3));
     saveProjectButton.setBounds (projectRow.removeFromLeft (80).reduced (3));
     saveAsProjectButton.setBounds (projectRow.removeFromLeft (90).reduced (3));
     projectLabel.setBounds (projectRow.reduced (8, 0));
 
-    auto transport = main.removeFromTop (40);
+    auto transport = area.removeFromTop (40);
     playButton.setBounds (transport.removeFromLeft (90).reduced (3));
     stopButton.setBounds (transport.removeFromLeft (90).reduced (3));
     bpmLabel.setBounds (transport.removeFromLeft (48));
     bpmSlider.setBounds (transport.removeFromLeft (210).reduced (3));
-    selectedSceneLabel.setBounds (transport.reduced (8, 0));
 
-    auto sceneEditRow = main.removeFromTop (40);
+    auto sceneEditRow = area.removeFromTop (40);
     sceneNameLabel.setBounds (sceneEditRow.removeFromLeft (95));
-    sceneNameEditor.setBounds (sceneEditRow.removeFromLeft (250).reduced (3));
-    sceneBarsLabel.setBounds (sceneEditRow.removeFromLeft (70));
-    sceneBarsBox.setBounds (sceneEditRow.removeFromLeft (110).reduced (3));
+    sceneNameEditor.setBounds (sceneEditRow.removeFromLeft (240).reduced (3));
+    sceneBarsLabel.setBounds (sceneEditRow.removeFromLeft (65));
+    sceneBarsBox.setBounds (sceneEditRow.removeFromLeft (100).reduced (3));
+    copySceneButton.setBounds (sceneEditRow.removeFromLeft (115).reduced (3));
+    pasteSceneButton.setBounds (sceneEditRow.removeFromLeft (120).reduced (3));
+    clearSceneButton.setBounds (sceneEditRow.removeFromLeft (120).reduced (3));
 
-    main.removeFromTop (8);
+    area.removeFromTop (6);
 
-    auto trackArea = main.removeFromTop (170);
+    auto trackArea = area.removeFromTop (164);
     const int trackColumns = 8;
     const int trackRows = 2;
     const int trackWidth = trackArea.getWidth() / trackColumns;
@@ -347,9 +333,9 @@ void MainComponent::resized()
         loadButtons[i].setBounds (cell);
     }
 
-    main.removeFromTop (6);
+    area.removeFromTop (6);
 
-    auto grid = main.reduced (4);
+    auto grid = area.reduced (4);
     const int cellW = grid.getWidth() / sceneColumns;
     const int cellH = grid.getHeight() / sceneRows;
 
@@ -393,10 +379,10 @@ void MainComponent::newProject()
             .getChildFile ("SkizoDroid Song.sklive"),
         "*.sklive");
 
-    const auto flags = juce::FileBrowserComponent::saveMode
-                     | juce::FileBrowserComponent::canSelectFiles;
+    const auto chooserFlags = juce::FileBrowserComponent::saveMode
+                            | juce::FileBrowserComponent::canSelectFiles;
 
-    fileChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    fileChooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& chooser)
     {
         auto chosen = chooser.getResult();
         if (chosen == juce::File())
@@ -428,10 +414,10 @@ void MainComponent::openProject()
         juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
         "*.sklive");
 
-    const auto flags = juce::FileBrowserComponent::openMode
-                     | juce::FileBrowserComponent::canSelectFiles;
+    const auto chooserFlags = juce::FileBrowserComponent::openMode
+                            | juce::FileBrowserComponent::canSelectFiles;
 
-    fileChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    fileChooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& chooser)
     {
         const auto file = chooser.getResult();
         if (! file.existsAsFile())
@@ -475,10 +461,10 @@ void MainComponent::saveProjectAs()
             .getChildFile (projectFile.getFileName()),
         "*.sklive");
 
-    const auto flags = juce::FileBrowserComponent::saveMode
-                     | juce::FileBrowserComponent::canSelectFiles;
+    const auto chooserFlags = juce::FileBrowserComponent::saveMode
+                            | juce::FileBrowserComponent::canSelectFiles;
 
-    fileChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    fileChooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& chooser)
     {
         auto chosen = chooser.getResult();
         if (chosen == juce::File())
@@ -530,7 +516,7 @@ bool MainComponent::saveProjectToFile (const juce::File& file)
         return false;
 
     juce::XmlElement root ("SkizoDroidLiveProject");
-    root.setAttribute ("version", "0.4");
+    root.setAttribute ("version", "0.4.2");
     root.setAttribute ("bpm", bpmSlider.getValue());
 
     auto* tracksXml = root.createNewChildElement ("Tracks");
@@ -703,16 +689,15 @@ void MainComponent::chooseLoopForTrack (int trackIndex)
     }
 
     fileChooser = std::make_unique<juce::FileChooser> (
-        "Choose audio for " + sceneNames[selectedScene]
-            + " / " + trackNames[trackIndex],
+        "Choose audio for " + sceneNames[selectedScene] + " / " + trackNames[trackIndex],
         juce::File(),
         "*.wav;*.aif;*.aiff");
 
-    const auto flags = juce::FileBrowserComponent::openMode
-                     | juce::FileBrowserComponent::canSelectFiles;
+    const auto chooserFlags = juce::FileBrowserComponent::openMode
+                            | juce::FileBrowserComponent::canSelectFiles;
 
     fileChooser->launchAsync (
-        flags,
+        chooserFlags,
         [this, trackIndex] (const juce::FileChooser& chooser)
         {
             const auto sourceFile = chooser.getResult();
@@ -973,16 +958,14 @@ void MainComponent::updateProjectLabel()
     }
 
     projectLabel.setText (
-        "PROJECT: " + projectFile.getFileNameWithoutExtension()
-            + "   |   " + projectFolder.getFullPathName(),
+        "PROJECT: " + projectFile.getFileNameWithoutExtension() + "   |   " + projectFolder.getFullPathName(),
         juce::dontSendNotification);
 }
 
 void MainComponent::updateStatus()
 {
     juce::String text = playing
-        ? "PLAYING  |  " + sceneNames[currentScene]
-            + "  |  " + juce::String (sceneBars[currentScene]) + " bars"
+        ? "PLAYING  |  " + sceneNames[currentScene] + "  |  " + juce::String (sceneBars[currentScene]) + " bars"
         : "STOPPED";
 
     if (queuedScene >= 0)
@@ -994,8 +977,7 @@ void MainComponent::updateStatus()
     statusLabel.setText (text, juce::dontSendNotification);
 
     selectedSceneLabel.setText (
-        "EDIT: " + sceneNames[selectedScene]
-            + "   |   Scene " + juce::String (selectedScene + 1),
+        "EDIT: " + sceneNames[selectedScene] + "   |   Scene " + juce::String (selectedScene + 1),
         juce::dontSendNotification);
 }
 

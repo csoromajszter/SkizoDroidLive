@@ -73,7 +73,7 @@ private:
     std::array<juce::TextButton, numScenes> sceneButtons;
 
     std::unique_ptr<juce::Drawable> logoDrawable;
-    juce::Rectangle<int> logoPanelBounds;
+    juce::Rectangle<int> headerLogoBounds;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 

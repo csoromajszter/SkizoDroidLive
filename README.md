@@ -1,13 +1,13 @@
-SkizoDroid Live V0.4 Update
+SkizoDroid Live V0.4.2 Layout Fix
 
-Files included:
+Use these files:
 - CMakeLists.txt
-- Assets/skizodroid_logo_white.png
+- Assets/skizodroid_logo_header.png
 - Source/MainComponent.h
 - Source/MainComponent.cpp
 
-Main additions:
-- Left-side SkizoDroid inverted logo panel
-- More compact track loading area, taller scene grid
-- Per-slot CLEAR buttons
-- COPY SCENE / PASTE SCENE / CLEAR SCENE workflow
+Changes:
+- small header logo next to the title
+- removed large left logo panel
+- copy/paste/clear scene moved next to Scene Name / Length
+- keeps per-slot CLEAR and scene clipboard workflow
