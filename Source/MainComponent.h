@@ -3,9 +3,10 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
-class MainComponent : public juce::AudioAppComponent,
-                      public juce::Button::Listener,
-                      public juce::Timer
+#include <array>
+#include <memory>
+
+class MainComponent : public juce::AudioAppComponent
 {
 public:
     MainComponent();
@@ -14,60 +15,61 @@ public:
     void prepareToPlay (int samplesPerBlockExpected,
                         double sampleRate) override;
 
-    void getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill) override;
+    void getNextAudioBlock (
+        const juce::AudioSourceChannelInfo& bufferToFill) override;
 
     void releaseResources() override;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
 
-    void buttonClicked (juce::Button* button) override;
-
-    void timerCallback() override;
-
 private:
-    struct LoopTrack
-    {
-        juce::TextButton loadButton;
-        juce::TextButton muteButton;
-        juce::Slider volumeSlider;
-
-        std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
-        juce::AudioTransportSource transportSource;
-
-        juce::File loadedFile;
-    };
-
     static constexpr int numTracks = 4;
     static constexpr int numScenes = 4;
 
+    struct LoopTrack
+    {
+        juce::AudioTransportSource transport;
+        std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
+        juce::File loadedFile;
+    };
+
     std::array<LoopTrack, numTracks> tracks;
+
+    juce::AudioFormatManager formatManager;
+    juce::MixerAudioSource mixer;
+
+    juce::Label titleLabel;
+    juce::Label statusLabel;
+    juce::Label bpmLabel;
+
+    juce::Slider bpmSlider;
 
     juce::TextButton playButton { "PLAY" };
     juce::TextButton stopButton { "STOP" };
 
-    juce::Label bpmLabel;
-    juce::Slider bpmSlider;
-
+    std::array<juce::TextButton, numTracks> loadButtons;
     std::array<juce::TextButton, numScenes> sceneButtons;
 
-    juce::Label currentSceneLabel;
+    std::unique_ptr<juce::FileChooser> fileChooser;
 
-    juce::AudioFormatManager formatManager;
-
-    bool isPlaying = false;
+    bool playing = false;
 
     int currentScene = 0;
-    int pendingScene = -1;
+    int queuedScene = -1;
 
     double currentSampleRate = 44100.0;
     double samplesSinceBarStart = 0.0;
 
-    void loadLoopForTrack (int trackIndex);
+    void chooseLoopForTrack (int trackIndex);
+
+    void triggerScene (int sceneIndex);
+    void startSceneNow (int sceneIndex);
+
     void startPlayback();
-    void stopPlayback();
-    void requestSceneChange (int sceneIndex);
-    void applySceneChange (int sceneIndex);
+    void stopAll();
+
+    void updateStatus();
 
     double getSamplesPerBar() const;
 
