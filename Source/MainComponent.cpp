@@ -5,237 +5,384 @@ MainComponent::MainComponent()
     formatManager.registerBasicFormats();
 
     titleLabel.setText ("SKIZODROID LIVE", juce::dontSendNotification);
+    titleLabel.setJustificationType (juce::Justification::centred);
     titleLabel.setFont (juce::FontOptions (28.0f, juce::Font::bold));
-    titleLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (titleLabel);
 
-    statusLabel.setText ("STOPPED  |  Scene: -  |  Queue: -", juce::dontSendNotification);
+    statusLabel.setText ("READY", juce::dontSendNotification);
+    statusLabel.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (statusLabel);
 
     bpmLabel.setText ("BPM", juce::dontSendNotification);
+    bpmLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (bpmLabel);
 
     bpmSlider.setRange (40.0, 240.0, 1.0);
     bpmSlider.setValue (120.0);
-    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 72, 24);
+    bpmSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    bpmSlider.setTextBoxStyle (
+        juce::Slider::TextBoxRight,
+        false,
+        70,
+        24);
+
     addAndMakeVisible (bpmSlider);
 
     playButton.onClick = [this]
     {
-        if (currentScene < 0)
-            currentScene = 0;
-
-        startSceneNow (currentScene);
+        startPlayback();
     };
 
-    stopButton.onClick = [this] { stopAll(); };
+    stopButton.onClick = [this]
+    {
+        stopAll();
+    };
+
     addAndMakeVisible (playButton);
     addAndMakeVisible (stopButton);
 
+    const std::array<juce::String, numTracks> trackNames =
+    {
+        "DRUM",
+        "BASS",
+        "SYNTH",
+        "NOISE"
+    };
+
     for (int i = 0; i < numTracks; ++i)
     {
-        loadButtons[(size_t) i].onClick = [this, i] { chooseLoopForTrack (i); };
-        addAndMakeVisible (loadButtons[(size_t) i]);
+        loadButtons[i].setButtonText ("LOAD " + trackNames[i]);
+
+        loadButtons[i].onClick = [this, i]
+        {
+            chooseLoopForTrack (i);
+        };
+
+        addAndMakeVisible (loadButtons[i]);
+
+        mixer.addInputSource (&tracks[i].transport, false);
     }
 
     for (int i = 0; i < numScenes; ++i)
     {
-        sceneButtons[(size_t) i].onClick = [this, i] { triggerScene (i); };
-        addAndMakeVisible (sceneButtons[(size_t) i]);
+        sceneButtons[i].setButtonText (
+            "SCENE " + juce::String (i + 1));
+
+        sceneButtons[i].onClick = [this, i]
+        {
+            triggerScene (i);
+        };
+
+        addAndMakeVisible (sceneButtons[i]);
     }
 
-    setSize (1180, 760);
+    setSize (1100, 700);
+
     setAudioChannels (0, 2);
-    startTimerHz (30);
+
+    updateStatus();
 }
 
 MainComponent::~MainComponent()
 {
     shutdownAudio();
-}
-
-void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRate)
-{
-    currentSampleRate = sampleRate;
-    mixer.prepareToPlay (samplesPerBlockExpected, sampleRate);
 
     for (auto& track : tracks)
-        track.transport.prepareToPlay (samplesPerBlockExpected, sampleRate);
+    {
+        track.transport.stop();
+        track.transport.setSource (nullptr);
+        track.readerSource.reset();
+    }
+
+    mixer.removeAllInputs();
 }
 
-void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
+void MainComponent::prepareToPlay (
+    int samplesPerBlockExpected,
+    double sampleRate)
 {
-    bufferToFill.clearActiveBufferRegion();
+    currentSampleRate = sampleRate;
+
+    mixer.prepareToPlay (
+        samplesPerBlockExpected,
+        sampleRate);
+}
+
+void MainComponent::getNextAudioBlock (
+    const juce::AudioSourceChannelInfo& bufferToFill)
+{
     mixer.getNextAudioBlock (bufferToFill);
 
-    if (playing)
-        playheadSeconds += bufferToFill.numSamples / currentSampleRate;
+    if (! playing)
+        return;
+
+    samplesSinceBarStart += bufferToFill.numSamples;
+
+    const auto samplesPerBar = getSamplesPerBar();
+
+    if (samplesSinceBarStart >= samplesPerBar)
+    {
+        samplesSinceBarStart =
+            std::fmod (samplesSinceBarStart, samplesPerBar);
+
+        if (queuedScene >= 0)
+        {
+            const int sceneToLaunch = queuedScene;
+            queuedScene = -1;
+
+            juce::MessageManager::callAsync (
+                [safeThis =
+                     juce::Component::SafePointer<MainComponent> (this),
+                 sceneToLaunch]
+                {
+                    if (safeThis != nullptr)
+                        safeThis->startSceneNow (sceneToLaunch);
+                });
+        }
+    }
 }
 
 void MainComponent::releaseResources()
 {
     mixer.releaseResources();
-    for (auto& track : tracks)
-        track.transport.releaseResources();
 }
 
 void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour::fromRGB (14, 14, 16));
+    g.fillAll (juce::Colour::fromRGB (16, 16, 18));
 
-    auto area = getLocalBounds().reduced (20);
-    auto header = area.removeFromTop (96);
-    juce::ignoreUnused (header);
+    g.setColour (juce::Colour::fromRGB (45, 45, 50));
 
-    g.setColour (juce::Colour::fromRGB (42, 42, 46));
-    g.drawRoundedRectangle (area.toFloat(), 10.0f, 1.5f);
-
-    g.setColour (juce::Colour::fromRGB (180, 180, 186));
-    g.setFont (15.0f);
-    g.drawText ("V0.1  •  Audio-loop prototype  •  4 tracks / 4 scenes",
-                26, getHeight() - 38, getWidth() - 52, 22,
-                juce::Justification::centredRight);
+    g.drawRoundedRectangle (
+        getLocalBounds()
+            .toFloat()
+            .reduced (20.0f),
+        10.0f,
+        2.0f);
 }
 
 void MainComponent::resized()
 {
-    auto area = getLocalBounds().reduced (24);
+    auto area = getLocalBounds().reduced (30);
 
-    auto top = area.removeFromTop (54);
-    titleLabel.setBounds (top.removeFromLeft (360));
-    stopButton.setBounds (top.removeFromRight (100).reduced (4));
-    playButton.setBounds (top.removeFromRight (100).reduced (4));
-    bpmSlider.setBounds (top.removeFromRight (170).reduced (4));
-    bpmLabel.setBounds (top.removeFromRight (42));
+    titleLabel.setBounds (
+        area.removeFromTop (55));
 
-    statusLabel.setBounds (area.removeFromTop (36));
-    area.removeFromTop (16);
+    statusLabel.setBounds (
+        area.removeFromTop (35));
 
-    auto loads = area.removeFromTop (72);
-    for (auto& button : loadButtons)
-        button.setBounds (loads.removeFromLeft (loads.getWidth() / (int) (&loadButtons.back() - &button + 1)).reduced (6));
+    area.removeFromTop (10);
 
-    area.removeFromTop (28);
+    auto transportArea =
+        area.removeFromTop (55);
 
-    auto grid = area.removeFromTop (300);
-    const int gap = 12;
-    const int w = (grid.getWidth() - gap * (numScenes - 1)) / numScenes;
+    playButton.setBounds (
+        transportArea.removeFromLeft (120).reduced (5));
+
+    stopButton.setBounds (
+        transportArea.removeFromLeft (120).reduced (5));
+
+    bpmLabel.setBounds (
+        transportArea.removeFromLeft (70));
+
+    bpmSlider.setBounds (
+        transportArea.removeFromLeft (250).reduced (5));
+
+    area.removeFromTop (20);
+
+    auto loadArea =
+        area.removeFromTop (80);
+
+    const int loadWidth =
+        loadArea.getWidth() / numTracks;
+
+    for (int i = 0; i < numTracks; ++i)
+    {
+        loadButtons[i].setBounds (
+            loadArea
+                .removeFromLeft (loadWidth)
+                .reduced (8));
+    }
+
+    area.removeFromTop (30);
+
+    auto sceneArea =
+        area.removeFromTop (180);
+
+    const int sceneWidth =
+        sceneArea.getWidth() / numScenes;
+
     for (int i = 0; i < numScenes; ++i)
     {
-        sceneButtons[(size_t) i].setBounds (grid.removeFromLeft (w));
-        grid.removeFromLeft (gap);
+        sceneButtons[i].setBounds (
+            sceneArea
+                .removeFromLeft (sceneWidth)
+                .reduced (8));
     }
-}
-
-void MainComponent::timerCallback()
-{
-    if (playing && queuedScene >= 0)
-    {
-        const double bpm = bpmSlider.getValue();
-        const double secondsPerBar = (60.0 / bpm) * 4.0;
-        const double pos = std::fmod (playheadSeconds, secondsPerBar);
-
-        // Switch close to the next bar boundary. This is a prototype clock;
-        // later this will be moved to an audio-thread-safe transport clock.
-        if (pos < 0.05 || secondsPerBar - pos < 0.05)
-        {
-            startSceneNow (queuedScene);
-            queuedScene = -1;
-        }
-    }
-
-    updateStatus();
 }
 
 void MainComponent::chooseLoopForTrack (int trackIndex)
 {
-    auto chooser = std::make_shared<juce::FileChooser> (
-        "Choose WAV/AIFF loop for track",
-        juce::File{},
+    fileChooser = std::make_unique<juce::FileChooser> (
+        "Choose an audio loop",
+        juce::File(),
         "*.wav;*.aif;*.aiff");
 
-    chooser->launchAsync (juce::FileBrowserComponent::openMode |
-                          juce::FileBrowserComponent::canSelectFiles,
-                          [this, trackIndex, chooser] (const juce::FileChooser& fc)
-    {
-        auto file = fc.getResult();
-        if (! file.existsAsFile())
-            return;
+    const auto flags =
+        juce::FileBrowserComponent::openMode |
+        juce::FileBrowserComponent::canSelectFiles;
 
-        std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
-        if (reader == nullptr)
-            return;
+    fileChooser->launchAsync (
+        flags,
+        [this, trackIndex]
+        (const juce::FileChooser& chooser)
+        {
+            const auto file =
+                chooser.getResult();
 
-        auto source = std::make_unique<juce::AudioFormatReaderSource> (reader.release(), true);
-        auto& track = tracks[(size_t) trackIndex];
+            if (! file.existsAsFile())
+                return;
 
-        mixer.removeInputSource (&track.transport);
-        track.transport.stop();
-        track.transport.setSource (nullptr);
+            std::unique_ptr<juce::AudioFormatReader> reader (
+                formatManager.createReaderFor (file));
 
-        track.readerSource = std::move (source);
-        track.file = file;
-        track.transport.setSource (track.readerSource.get(), 0, nullptr,
-                                   track.readerSource->getAudioFormatReader()->sampleRate);
-        track.transport.setGain (track.gain);
-        mixer.addInputSource (&track.transport, false);
+            if (reader == nullptr)
+            {
+                statusLabel.setText (
+                    "Could not load audio file",
+                    juce::dontSendNotification);
 
-        loadButtons[(size_t) trackIndex].setButtonText (file.getFileNameWithoutExtension());
-    });
+                return;
+            }
+
+            auto& track = tracks[trackIndex];
+
+            track.transport.stop();
+            track.transport.setSource (nullptr);
+            track.readerSource.reset();
+
+            const double sourceSampleRate =
+                reader->sampleRate;
+
+            auto newSource =
+                std::make_unique<
+                    juce::AudioFormatReaderSource> (
+                        reader.release(),
+                        true);
+
+            newSource->setLooping (true);
+
+            track.transport.setSource (
+                newSource.get(),
+                0,
+                nullptr,
+                sourceSampleRate);
+
+            track.readerSource =
+                std::move (newSource);
+
+            track.loadedFile = file;
+
+            loadButtons[trackIndex].setButtonText (
+                file.getFileNameWithoutExtension());
+
+            updateStatus();
+        });
 }
 
 void MainComponent::triggerScene (int sceneIndex)
 {
     if (! playing)
     {
-        currentScene = sceneIndex;
         startSceneNow (sceneIndex);
         return;
     }
 
     queuedScene = sceneIndex;
+
+    updateStatus();
 }
 
 void MainComponent::startSceneNow (int sceneIndex)
 {
     currentScene = sceneIndex;
-    playing = true;
-    playheadSeconds = 0.0;
+    queuedScene = -1;
 
-    // V0.1 behaviour: all loaded tracks restart together.
-    // Next milestone: every scene stores a different clip per track.
+    samplesSinceBarStart = 0.0;
+
     for (auto& track : tracks)
     {
         if (track.readerSource != nullptr)
         {
+            track.transport.stop();
             track.transport.setPosition (0.0);
             track.transport.start();
         }
     }
+
+    playing = true;
+
+    updateStatus();
+}
+
+void MainComponent::startPlayback()
+{
+    startSceneNow (currentScene);
 }
 
 void MainComponent::stopAll()
 {
     for (auto& track : tracks)
+    {
         track.transport.stop();
+        track.transport.setPosition (0.0);
+    }
 
     playing = false;
     queuedScene = -1;
-    playheadSeconds = 0.0;
+    samplesSinceBarStart = 0.0;
+
     updateStatus();
 }
 
 void MainComponent::updateStatus()
 {
-    auto sceneName = [] (int index)
+    juce::String text;
+
+    if (playing)
     {
-        if (index < 0) return juce::String ("-");
-        return juce::String::charToString ((juce::juce_wchar) ('A' + index));
-    };
+        text =
+            "PLAYING  |  SCENE "
+            + juce::String (currentScene + 1);
+    }
+    else
+    {
+        text = "STOPPED";
+    }
+
+    if (queuedScene >= 0)
+    {
+        text +=
+            "  |  NEXT: SCENE "
+            + juce::String (queuedScene + 1);
+    }
 
     statusLabel.setText (
-        juce::String (playing ? "PLAYING" : "STOPPED") +
-        "  |  Scene: " + sceneName (currentScene) +
-        "  |  Queue: " + sceneName (queuedScene),
+        text,
         juce::dontSendNotification);
+}
+
+double MainComponent::getSamplesPerBar() const
+{
+    const double bpm =
+        bpmSlider.getValue();
+
+    const double secondsPerBeat =
+        60.0 / bpm;
+
+    const double secondsPerBar =
+        secondsPerBeat * 4.0;
+
+    return secondsPerBar *
+           currentSampleRate;
 }
