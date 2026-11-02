@@ -35,12 +35,9 @@ MainComponent::MainComponent()
     formatManager.registerBasicFormats();
     initialiseDefaults();
 
-    if (auto* drawable = juce::Drawable::createFromImageData (
-            BinaryData::skizodroid_logo_white_png,
-            BinaryData::skizodroid_logo_white_pngSize))
-    {
-        logoDrawable.reset (drawable);
-    }
+    logoDrawable = juce::Drawable::createFromImageData (
+        BinaryData::skizodroid_logo_white_png,
+        BinaryData::skizodroid_logo_white_pngSize);
 
     titleLabel.setText ("SKIZODROID LIVE  V0.4", juce::dontSendNotification);
     titleLabel.setJustificationType (juce::Justification::centredLeft);
@@ -116,7 +113,7 @@ MainComponent::MainComponent()
     newProjectButton.onClick = [this] { newProject(); };
     openProjectButton.onClick = [this] { openProject(); };
     saveProjectButton.onClick = [this] { saveProject(); };
-    saveAsProjectButton.onClick = [this] { saveAsProject(); };
+    saveAsProjectButton.onClick = [this] { saveProjectAs(); };
 
     addAndMakeVisible (newProjectButton);
     addAndMakeVisible (openProjectButton);
