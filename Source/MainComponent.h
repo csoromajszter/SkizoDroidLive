@@ -4,6 +4,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <array>
+#include <atomic>
 #include <memory>
 
 class MainComponent : public juce::AudioAppComponent
@@ -91,6 +92,8 @@ private:
     std::array<juce::TextButton, numTracks> loadButtons;
     std::array<juce::TextButton, numTracks> clearButtons;
     std::array<juce::TextButton, numScenes> sceneButtons;
+    std::array<juce::TextButton, numScenes> previewButtons;
+    std::array<juce::TextButton, numScenes> chooseButtons;
     std::array<juce::TextButton, visibleSongSteps> songStepButtons;
 
     std::unique_ptr<juce::Drawable> logoDrawable;
@@ -117,6 +120,9 @@ private:
     int selectedSongStep = -1;
     int currentSongStep = -1;
     int songPage = 0;
+    int queuedSongStep = -1;
+    int previewSceneIndex = -1;
+    bool previewMode = false;
 
     bool playing = false;
     bool loadingProjectUi = false;
@@ -127,6 +133,13 @@ private:
 
     double currentSampleRate = 44100.0;
     double samplesSinceSceneStart = 0.0;
+    // 0 = regular, 1 = fading old scene, 2 = silent while the
+    // message thread switches transports, 3 = fading in new scene.
+    std::atomic<int> transitionFadeState { 0 };
+    std::atomic<bool> startFadeIn { false };
+    int fadeSamplePosition = 0; // Only accessed on audio thread.
+    bool transitionCallbackScheduled = false; // Only accessed on audio thread.
+
 
     void initialiseDefaults();
     void createFreshWorkingFolder();
@@ -165,6 +178,10 @@ private:
     void beginAssignSceneToSongStep();
     void cancelAssignSceneToSongStep();
     void assignSceneToSelectedSongStep (int sceneIndex);
+    void toggleScenePreview (int sceneIndex);
+    void stopScenePreview();
+    void completeQueuedTransition();
+    void shrinkSongTail();
     void removeSelectedSongStep();
     void toggleSelectedSongStepHold();
     void clearSong();

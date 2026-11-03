@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include <BinaryData.h>
 #include <cmath>
+#include <atomic>
 
 namespace
 {
@@ -213,10 +214,7 @@ MainComponent::MainComponent()
         sceneButtons[i].onClick = [this, i]
         {
             if (songMode && choosingSongScene)
-            {
-                assignSceneToSelectedSongStep (i);
-                return;
-            }
+                return; // Name header only; use the large P/A targets below.
 
             if (playing && ! songMode)
                 triggerScene (i);
@@ -224,6 +222,18 @@ MainComponent::MainComponent()
                 selectSceneForEditing (i);
         };
         addAndMakeVisible (sceneButtons[i]);
+
+        previewButtons[i].setButtonText ("P");
+        previewButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (157, 42, 52));
+        previewButtons[i].setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+        previewButtons[i].onClick = [this, i] { toggleScenePreview (i); };
+        addAndMakeVisible (previewButtons[i]);
+
+        chooseButtons[i].setButtonText ("A");
+        chooseButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (100, 55, 165));
+        chooseButtons[i].setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+        chooseButtons[i].onClick = [this, i] { assignSceneToSelectedSongStep (i); };
+        addAndMakeVisible (chooseButtons[i]);
     }
 
     setSize (1500, 940);
@@ -336,7 +346,7 @@ bool MainComponent::writeProjectXml()
         return false;
 
     juce::XmlElement root ("SkizoDroidLiveProject");
-    root.setAttribute ("version", "0.7");
+    root.setAttribute ("version", "0.9");
     root.setAttribute ("bpm", bpmSlider.getValue());
 
     auto* scenesXml = root.createNewChildElement ("Scenes");
@@ -363,6 +373,7 @@ bool MainComponent::writeProjectXml()
     for (int i = 0; i < songStepCount; ++i)
     {
         auto* stepXml = songXml->createNewChildElement ("Step");
+        stepXml->setAttribute ("index", i);
         stepXml->setAttribute ("scene", songSteps[i].sceneIndex);
         stepXml->setAttribute ("hold", songSteps[i].hold);
     }
@@ -413,18 +424,22 @@ bool MainComponent::readProjectXml()
 
     if (auto* songXml = root->getChildByName ("Song"))
     {
+        int legacySequentialIndex = 0;
         forEachXmlChildElementWithTagName (*songXml, stepXml, "Step")
         {
-            if (songStepCount >= maxSongSteps)
-                break;
-
-            const int sceneIndex = stepXml->getIntAttribute ("scene", -1);
-            if (sceneIndex < 0 || sceneIndex >= numScenes)
+            // Old V0.8 projects have no index and are sequential.
+            const int index = stepXml->getIntAttribute ("index", legacySequentialIndex);
+            ++legacySequentialIndex;
+            if (index < 0 || index >= maxSongSteps)
                 continue;
 
-            songSteps[songStepCount].sceneIndex = sceneIndex;
-            songSteps[songStepCount].hold = stepXml->getBoolAttribute ("hold", false);
-            ++songStepCount;
+            const int sceneIndex = stepXml->getIntAttribute ("scene", -1);
+            if (sceneIndex >= 0 && sceneIndex < numScenes)
+            {
+                songSteps[index].sceneIndex = sceneIndex;
+                songSteps[index].hold = stepXml->getBoolAttribute ("hold", false);
+                songStepCount = juce::jmax (songStepCount, index + 1);
+            }
         }
     }
 
@@ -435,6 +450,7 @@ bool MainComponent::readProjectXml()
     selectedSongStep = songStepCount > 0 ? 0 : -1;
     currentSongStep = -1;
     songPage = 0;
+    queuedSongStep = -1;
     releaseHoldAtBoundary = false;
     choosingSongScene = false;
 
@@ -515,41 +531,125 @@ void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRat
 
 void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
 {
-    mixer.getNextAudioBlock (bufferToFill);
-    if (! playing)
-        return;
+    const int numSamples = bufferToFill.numSamples;
+    const int fadeLength = juce::jmax (1, static_cast<int> (currentSampleRate * 0.008));
 
-    samplesSinceSceneStart += bufferToFill.numSamples;
-    const auto samplesPerScene = getSamplesPerScene (currentScene);
-
-    if (samplesPerScene > 0.0 && samplesSinceSceneStart >= samplesPerScene)
+    int phase = transitionFadeState.load (std::memory_order_acquire);
+    if (phase == 2)
     {
-        samplesSinceSceneStart = std::fmod (samplesSinceSceneStart, samplesPerScene);
-
-        if (songMode && currentSongStep >= 0)
+        // The source hand-off is performed on the message thread.
+        // Never let the audio thread render a transport being reconfigured.
+        bufferToFill.clearActiveBufferRegion();
+        if (startFadeIn.exchange (false))
         {
-            const bool stepIsHold = songSteps[currentSongStep].hold;
-            if (! stepIsHold || releaseHoldAtBoundary)
+            transitionFadeState.store (3, std::memory_order_release);
+            fadeSamplePosition = 0;
+        }
+        return;
+    }
+
+    if (! playing)
+    {
+        bufferToFill.clearActiveBufferRegion();
+        return;
+    }
+
+    mixer.getNextAudioBlock (bufferToFill);
+
+    if (phase == 1 || phase == 3)
+    {
+        // Smooth gain ramps suppress discontinuities at STOP->PLAY transitions.
+        // This is a fade-through-silence; it is NOT an overlapping crossfade.
+        const int channels = bufferToFill.buffer->getNumChannels();
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            const float fraction = juce::jlimit (0.0f, 1.0f,
+                static_cast<float> (fadeSamplePosition) / static_cast<float> (fadeLength));
+            const float gain = phase == 1 ? (1.0f - fraction) : fraction;
+            for (int ch = 0; ch < channels; ++ch)
+                bufferToFill.buffer->getWritePointer (ch, bufferToFill.startSample)[sample] *= gain;
+
+            ++fadeSamplePosition;
+            if (fadeSamplePosition >= fadeLength)
             {
-                releaseHoldAtBoundary = false;
-                juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this)]
+                if (phase == 1)
                 {
-                    if (safeThis != nullptr)
-                        safeThis->advanceSongAtBoundary();
-                });
+                    // Silence the remainder of the block and arrange the
+                    // actual transport change without blocking the audio thread.
+                    for (int ch = 0; ch < channels; ++ch)
+                        juce::FloatVectorOperations::clear (
+                            bufferToFill.buffer->getWritePointer (ch, bufferToFill.startSample) + sample + 1,
+                            numSamples - sample - 1);
+                    transitionFadeState.store (2, std::memory_order_release);
+                    if (! transitionCallbackScheduled)
+                    {
+                        transitionCallbackScheduled = true;
+                        juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this)]
+                        {
+                            if (safeThis != nullptr)
+                                safeThis->completeQueuedTransition();
+                        });
+                    }
+                }
+                else
+                {
+                    transitionFadeState.store (0, std::memory_order_release);
+                    transitionCallbackScheduled = false;
+                }
+                break;
             }
         }
-        else if (queuedScene >= 0)
-        {
-            const int sceneToLaunch = queuedScene;
-            queuedScene = -1;
-            juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this), sceneToLaunch]
-            {
-                if (safeThis != nullptr)
-                    safeThis->startSceneNow (sceneToLaunch);
-            });
-        }
+        return;
     }
+
+    if (previewMode)
+        return; // No Song Mode advancement while previewing.
+
+    samplesSinceSceneStart += numSamples;
+    const auto samplesPerScene = getSamplesPerScene (currentScene);
+    if (samplesPerScene <= 0.0 || samplesSinceSceneStart < samplesPerScene)
+        return;
+
+    samplesSinceSceneStart = std::fmod (samplesSinceSceneStart, samplesPerScene);
+
+    bool shouldChange = false;
+    if (songMode && currentSongStep >= 0)
+    {
+        const bool held = songSteps[currentSongStep].hold;
+        shouldChange = queuedSongStep >= 0 || ! held || releaseHoldAtBoundary;
+    }
+    else
+    {
+        shouldChange = queuedScene >= 0;
+    }
+
+    if (shouldChange)
+    {
+        fadeSamplePosition = 0;
+        transitionFadeState.store (1, std::memory_order_release);
+    }
+}
+
+void MainComponent::completeQueuedTransition()
+{
+    // The audio callback is outputting silence until this finishes.
+    if (transitionFadeState.load (std::memory_order_acquire) != 2 || ! playing)
+        return;
+
+    if (songMode && currentSongStep >= 0)
+    {
+        releaseHoldAtBoundary = false;
+        advanceSongAtBoundary();
+    }
+    else if (queuedScene >= 0)
+    {
+        const int next = queuedScene;
+        queuedScene = -1;
+        startSceneNow (next);
+    }
+
+    if (playing)
+        startFadeIn.store (true, std::memory_order_release);
 }
 
 void MainComponent::releaseResources()
@@ -655,10 +755,13 @@ void MainComponent::resized()
             {
                 const int col = i % sceneColumns;
                 const int row = i / sceneColumns;
-                sceneButtons[i].setBounds (grid.getX() + col * cellW + 3,
-                                           grid.getY() + row * cellH + 3,
-                                           cellW - 6,
-                                           cellH - 6);
+                auto cell = juce::Rectangle<int> (grid.getX() + col * cellW + 3,
+                                                   grid.getY() + row * cellH + 3,
+                                                   cellW - 6, cellH - 6);
+                sceneButtons[i].setBounds (cell.removeFromTop (juce::jmax (26, cell.getHeight() / 3)));
+                const int leftWidth = cell.getWidth() / 2;
+                previewButtons[i].setBounds (cell.removeFromLeft (leftWidth));
+                chooseButtons[i].setBounds (cell);
             }
         }
         else
@@ -704,7 +807,9 @@ void MainComponent::resetProjectData()
     songStepCount = 0;
     selectedSongStep = -1;
     currentSongStep = -1;
+    queuedSongStep = -1;
     songPage = 0;
+    queuedSongStep = -1;
     releaseHoldAtBoundary = false;
     choosingSongScene = false;
     bpmSlider.setValue (120.0, juce::dontSendNotification);
@@ -1013,7 +1118,13 @@ void MainComponent::updateModeVisibility()
     }
 
     for (auto& b : sceneButtons)
+    {
         b.setVisible (pattern || sceneChooser);
+        b.setEnabled (true); // Chooser clicks are ignored in the onClick handler.
+    }
+
+    for (auto& b : previewButtons) b.setVisible (sceneChooser);
+    for (auto& b : chooseButtons) b.setVisible (sceneChooser);
 
     assignSceneButton.setVisible (songGrid);
     cancelSceneAssignButton.setVisible (sceneChooser);
@@ -1031,10 +1142,17 @@ void MainComponent::updateModeVisibility()
 
 void MainComponent::addSelectedSceneToSong()
 {
-    if (songStepCount >= maxSongSteps) return;
-    songSteps[songStepCount] = { selectedScene, false };
-    selectedSongStep = songStepCount++;
-    songPage = selectedSongStep / visibleSongSteps;
+    // Keep this Pattern shortcut, but use a free slot rather than forcing
+    // the user to append at the end of their song.
+    int index = 0;
+    while (index < maxSongSteps && songSteps[index].sceneIndex >= 0)
+        ++index;
+    if (index >= maxSongSteps) return;
+
+    songSteps[index] = { selectedScene, false };
+    songStepCount = juce::jmax (songStepCount, index + 1);
+    selectedSongStep = index;
+    songPage = index / visibleSongSteps;
     if (projectFile != juce::File()) saveProject();
     refreshSongUi();
 }
@@ -1045,15 +1163,9 @@ void MainComponent::beginAssignSceneToSongStep()
         return;
 
     if (selectedSongStep < 0)
-    {
-        if (songStepCount >= maxSongSteps)
-            return;
+        selectedSongStep = 0;
 
-        selectedSongStep = songStepCount;
-        songPage = selectedSongStep / visibleSongSteps;
-    }
-
-    if (selectedSongStep > songStepCount || selectedSongStep >= maxSongSteps)
+    if (selectedSongStep >= maxSongSteps)
         return;
 
     choosingSongScene = true;
@@ -1071,6 +1183,7 @@ void MainComponent::cancelAssignSceneToSongStep()
     if (! choosingSongScene)
         return;
 
+    stopScenePreview();
     choosingSongScene = false;
     updateModeVisibility();
     refreshSongUi();
@@ -1081,30 +1194,21 @@ void MainComponent::cancelAssignSceneToSongStep()
 
 void MainComponent::assignSceneToSelectedSongStep (int sceneIndex)
 {
-    if (! songMode || ! choosingSongScene)
+    if (! songMode || ! choosingSongScene || sceneIndex < 0 || sceneIndex >= numScenes
+        || selectedSongStep < 0 || selectedSongStep >= maxSongSteps)
         return;
 
-    if (sceneIndex < 0 || sceneIndex >= numScenes)
-        return;
-
-    if (selectedSongStep < 0 || selectedSongStep > songStepCount || selectedSongStep >= maxSongSteps)
-        return;
-
-    if (selectedSongStep == songStepCount)
-    {
-        songSteps[selectedSongStep] = { sceneIndex, false };
-        ++songStepCount;
-    }
-    else
-    {
-        songSteps[selectedSongStep].sceneIndex = sceneIndex;
-    }
+    stopScenePreview();
+    // Preserve HOLD when replacing a previously assigned scene.
+    if (songSteps[selectedSongStep].sceneIndex < 0)
+        songSteps[selectedSongStep].hold = false;
+    songSteps[selectedSongStep].sceneIndex = sceneIndex;
+    songStepCount = juce::jmax (songStepCount, selectedSongStep + 1);
 
     selectedScene = sceneIndex;
     choosingSongScene = false;
 
-    if (projectFile != juce::File())
-        saveProject();
+    if (projectFile != juce::File()) saveProject();
 
     updateModeVisibility();
     refreshSongUi();
@@ -1114,13 +1218,48 @@ void MainComponent::assignSceneToSelectedSongStep (int sceneIndex)
     updateStatus();
 }
 
+void MainComponent::toggleScenePreview (int sceneIndex)
+{
+    if (! choosingSongScene || sceneIndex < 0 || sceneIndex >= numScenes)
+        return;
+
+    if (previewMode && previewSceneIndex == sceneIndex)
+    {
+        stopScenePreview();
+        return;
+    }
+
+    stopScenePreview();
+    previewMode = true;
+    previewSceneIndex = sceneIndex;
+    // Preview loops this scene, but never advances Song Mode.
+    startSceneNow (sceneIndex);
+    refreshSceneButtons();
+    updateStatus();
+}
+
+void MainComponent::stopScenePreview()
+{
+    if (! previewMode)
+        return;
+
+    stopAll();
+    previewMode = false;
+    previewSceneIndex = -1;
+    refreshSceneButtons();
+}
+
+void MainComponent::shrinkSongTail()
+{
+    while (songStepCount > 0 && songSteps[songStepCount - 1].sceneIndex < 0)
+        --songStepCount;
+}
+
 void MainComponent::removeSelectedSongStep()
 {
-    if (selectedSongStep < 0 || selectedSongStep >= songStepCount) return;
-    for (int i = selectedSongStep; i < songStepCount - 1; ++i) songSteps[i] = songSteps[i + 1];
-    songSteps[--songStepCount] = {};
-    selectedSongStep = songStepCount > 0 ? juce::jmin (selectedSongStep, songStepCount - 1) : -1;
-    songPage = selectedSongStep >= 0 ? selectedSongStep / visibleSongSteps : 0;
+    if (selectedSongStep < 0 || selectedSongStep >= maxSongSteps) return;
+    songSteps[selectedSongStep] = {}; // Never shift later steps.
+    shrinkSongTail();
     if (projectFile != juce::File()) saveProject();
     refreshSongUi();
 }
@@ -1140,6 +1279,7 @@ void MainComponent::clearSong()
     songStepCount = 0;
     selectedSongStep = -1;
     currentSongStep = -1;
+    queuedSongStep = -1;
     songPage = 0;
     if (projectFile != juce::File()) saveProject();
     refreshSongUi();
@@ -1159,17 +1299,16 @@ void MainComponent::selectSongStep (int absoluteIndex)
     if (absoluteIndex < 0 || absoluteIndex >= maxSongSteps)
         return;
 
-    // The first empty slot directly after the current song is selectable for assignment.
-    if (absoluteIndex > songStepCount)
-        return;
-
     selectedSongStep = absoluteIndex;
-
-    if (absoluteIndex < songStepCount)
+    const int sceneIndex = songSteps[absoluteIndex].sceneIndex;
+    if (sceneIndex >= 0 && sceneIndex < numScenes)
     {
-        const int sceneIndex = songSteps[absoluteIndex].sceneIndex;
-        if (sceneIndex >= 0 && sceneIndex < numScenes)
-            selectedScene = sceneIndex;
+        selectedScene = sceneIndex;
+        if (songMode && playing && ! previewMode)
+        {
+            // Backward or forward live jump: queued until the scene boundary.
+            queuedSongStep = absoluteIndex;
+        }
     }
 
     refreshSongUi();
@@ -1199,7 +1338,7 @@ void MainComponent::refreshSongUi()
         const int absoluteIndex = songPage * visibleSongSteps + i;
         auto& button = songStepButtons[i];
 
-        if (absoluteIndex < songStepCount)
+        if (absoluteIndex < songStepCount && songSteps[absoluteIndex].sceneIndex >= 0)
         {
             const auto& step = songSteps[absoluteIndex];
             juce::String text = juce::String (absoluteIndex + 1) + "\n";
@@ -1217,7 +1356,7 @@ void MainComponent::refreshSongUi()
             if (absoluteIndex == currentSongStep && playing && songMode)
                 button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (90, 70, 40));
         }
-        else if (absoluteIndex == songStepCount && songStepCount < maxSongSteps)
+        else
         {
             button.setButtonText (juce::String (absoluteIndex + 1) + "\n+ SCENE");
             button.setEnabled (true);
@@ -1225,22 +1364,19 @@ void MainComponent::refreshSongUi()
                               absoluteIndex == selectedSongStep ? juce::Colour::fromRGB (64, 64, 82)
                                                                 : juce::Colour::fromRGB (28, 38, 34));
         }
-        else
-        {
-            button.setButtonText (juce::String (absoluteIndex + 1));
-            button.setEnabled (false);
-            button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (24, 24, 28));
-        }
+
+        if (absoluteIndex == queuedSongStep && playing && songMode)
+            button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (60, 85, 130));
     }
 
-    const bool hasFilledSelection = selectedSongStep >= 0 && selectedSongStep < songStepCount;
+    const bool hasFilledSelection = selectedSongStep >= 0 && selectedSongStep < songStepCount
+                                    && songSteps[selectedSongStep].sceneIndex >= 0;
     const bool hasAssignableSelection = selectedSongStep >= 0
-                                     && selectedSongStep <= songStepCount
                                      && selectedSongStep < maxSongSteps;
 
     assignSceneButton.setEnabled (songMode && ! playing && hasAssignableSelection);
-    removeSongStepButton.setEnabled (hasFilledSelection);
-    holdSongStepButton.setEnabled (hasFilledSelection);
+    removeSongStepButton.setEnabled (hasFilledSelection && ! playing);
+    holdSongStepButton.setEnabled (hasFilledSelection && ! playing);
     holdSongStepButton.setButtonText (hasFilledSelection && songSteps[selectedSongStep].hold ? "HOLD: ON" : "HOLD: OFF");
     continueSongButton.setEnabled (songMode && playing && currentSongStep >= 0 && currentSongStep < songStepCount
                                    && songSteps[currentSongStep].hold);
@@ -1249,8 +1385,10 @@ void MainComponent::refreshSongUi()
 void MainComponent::startSongStepNow (int songIndex)
 {
     if (songIndex < 0 || songIndex >= songStepCount) { stopAll(); return; }
+    if (songSteps[songIndex].sceneIndex < 0) { stopAll(); return; }
     currentSongStep = songIndex;
     selectedSongStep = songIndex;
+    queuedSongStep = -1;
     releaseHoldAtBoundary = false;
     songPage = songIndex / visibleSongSteps;
     startSceneNow (songSteps[songIndex].sceneIndex);
@@ -1262,8 +1400,25 @@ void MainComponent::startSongStepNow (int songIndex)
 void MainComponent::advanceSongAtBoundary()
 {
     if (! songMode || currentSongStep < 0) return;
-    const int nextStep = currentSongStep + 1;
-    if (nextStep >= songStepCount) { stopAll(); return; }
+
+    int nextStep = -1;
+    if (queuedSongStep >= 0 && queuedSongStep < maxSongSteps
+        && songSteps[queuedSongStep].sceneIndex >= 0)
+        nextStep = queuedSongStep;
+    else
+    {
+        for (int i = currentSongStep + 1; i < songStepCount; ++i)
+        {
+            if (songSteps[i].sceneIndex >= 0)
+            {
+                nextStep = i;
+                break;
+            }
+        }
+    }
+
+    queuedSongStep = -1;
+    if (nextStep < 0) { stopAll(); return; }
     startSongStepNow (nextStep);
 }
 
@@ -1294,6 +1449,7 @@ void MainComponent::refreshSceneButtons()
             sceneButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (90, 70, 40));
         if (i == queuedScene)
             sceneButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (55, 75, 95));
+        previewButtons[i].setButtonText (previewMode && i == previewSceneIndex ? "STOP" : "P");
     }
 }
 
@@ -1372,10 +1528,29 @@ void MainComponent::startSceneNow (int sceneIndex)
 
 void MainComponent::startPlayback()
 {
-    if (songMode && songStepCount > 0)
-        startSongStepNow (selectedSongStep >= 0 && selectedSongStep < songStepCount ? selectedSongStep : 0);
+    if (choosingSongScene)
+        return; // Use the red P buttons for audition in scene assignment.
+
+    if (songMode)
+    {
+        int startingStep = selectedSongStep;
+        if (startingStep < 0 || startingStep >= maxSongSteps
+            || songSteps[startingStep].sceneIndex < 0)
+        {
+            startingStep = -1;
+            for (int i = 0; i < songStepCount; ++i)
+                if (songSteps[i].sceneIndex >= 0) { startingStep = i; break; }
+        }
+
+        if (startingStep >= 0)
+            startSongStepNow (startingStep);
+        else
+            statusLabel.setText ("ASSIGN A SCENE TO A SONG STEP FIRST", juce::dontSendNotification);
+    }
     else
+    {
         startSceneNow (selectedScene);
+    }
 }
 
 void MainComponent::stopAll()
@@ -1387,6 +1562,11 @@ void MainComponent::stopAll()
     }
     playing = false;
     queuedScene = -1;
+    queuedSongStep = -1;
+    previewMode = false;
+    previewSceneIndex = -1;
+    transitionFadeState.store (0);
+    startFadeIn.store (false);
     currentSongStep = -1;
     releaseHoldAtBoundary = false;
     samplesSinceSceneStart = 0.0;
@@ -1404,7 +1584,9 @@ void MainComponent::updateStatus()
 {
     if (songMode && choosingSongScene)
     {
-        statusLabel.setText ("CHOOSE A SCENE FOR SONG STEP " + juce::String (selectedSongStep + 1),
+        statusLabel.setText ("P = PREVIEW    |    A = ASSIGN    |    SONG STEP "
+                             + juce::String (selectedSongStep + 1)
+                             + (previewMode ? "    |    PLAYING: " + sceneNames[previewSceneIndex] : ""),
                              juce::dontSendNotification);
         return;
     }
@@ -1426,6 +1608,10 @@ void MainComponent::updateStatus()
 
     if (queuedScene >= 0 && ! songMode)
         text += "  |  NEXT: " + sceneNames[queuedScene];
+    if (queuedSongStep >= 0 && songMode)
+        text += "  |  QUEUED STEP " + juce::String (queuedSongStep + 1);
+    if (previewMode)
+        text += "  |  PREVIEW " + sceneNames[previewSceneIndex];
 
     if (songMode && currentSongStep >= 0 && currentSongStep < songStepCount
         && songSteps[currentSongStep].hold)
