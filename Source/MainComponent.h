@@ -25,7 +25,7 @@ private:
     static constexpr int sceneColumns = 8;
     static constexpr int sceneRows = 8;
     static constexpr int maxSongSteps = 128;
-    static constexpr int visibleSongSteps = 16;
+    static constexpr int visibleSongSteps = 64;
 
     struct LoopTrack
     {
@@ -46,7 +46,6 @@ private:
     std::array<SceneClipMap, numScenes> scenes;
     std::array<juce::String, numScenes> sceneNames;
     std::array<int, numScenes> sceneBars;
-    std::array<juce::String, numTracks> trackNames;
     std::array<SongStep, maxSongSteps> songSteps;
 
     juce::AudioFormatManager formatManager;
@@ -59,35 +58,34 @@ private:
     juce::Label bpmLabel;
     juce::Label sceneNameLabel;
     juce::Label sceneBarsLabel;
+    juce::Label songPageLabel;
 
     juce::Slider bpmSlider;
     juce::TextEditor sceneNameEditor;
     juce::ComboBox sceneBarsBox;
 
-    juce::TextButton newProjectButton { "NEW PROJECT" };
+    juce::TextButton newProjectButton { "NEW" };
     juce::TextButton openProjectButton { "OPEN" };
     juce::TextButton saveProjectButton { "SAVE" };
     juce::TextButton saveAsProjectButton { "SAVE AS" };
-
     juce::TextButton playButton { "PLAY" };
     juce::TextButton stopButton { "STOP" };
+    juce::TextButton patternModeButton { "PATTERN" };
+    juce::TextButton songModeButton { "SONG" };
 
-    juce::TextButton copySceneButton { "COPY SCENE" };
-    juce::TextButton pasteSceneButton { "PASTE SCENE" };
+    juce::TextButton copySceneButton { "COPY" };
+    juce::TextButton pasteSceneButton { "PASTE" };
     juce::TextButton clearSceneButton { "CLEAR SCENE" };
-
-    juce::TextButton patternModeButton { "PATTERN MODE" };
-    juce::TextButton songModeButton { "SONG MODE" };
     juce::TextButton addToSongButton { "ADD TO SONG" };
+
     juce::TextButton removeSongStepButton { "REMOVE" };
     juce::TextButton holdSongStepButton { "HOLD: OFF" };
     juce::TextButton continueSongButton { "CONTINUE" };
     juce::TextButton clearSongButton { "CLEAR SONG" };
     juce::TextButton prevSongPageButton { "<" };
     juce::TextButton nextSongPageButton { ">" };
-    juce::Label songPageLabel;
 
-    std::array<juce::TextEditor, numTracks> trackNameEditors;
+    std::array<juce::Label, numTracks> trackLabels;
     std::array<juce::TextButton, numTracks> loadButtons;
     std::array<juce::TextButton, numTracks> clearButtons;
     std::array<juce::TextButton, numScenes> sceneButtons;
@@ -99,7 +97,7 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     juce::File projectFile;
-    juce::File projectFolder;
+    juce::File workingFolder;
     juce::File audioFolder;
 
     SceneClipMap copiedScene;
@@ -124,13 +122,16 @@ private:
     double samplesSinceSceneStart = 0.0;
 
     void initialiseDefaults();
+    void createFreshWorkingFolder();
+    bool writeProjectXml();
+    bool readProjectXml();
+    bool packWorkingFolderToProject (const juce::File& targetFile);
+    bool unpackProjectToWorkingFolder (const juce::File& sourceFile);
 
     void newProject();
     void openProject();
     void saveProject();
     void saveProjectAs();
-    bool saveProjectToFile (const juce::File& file);
-    bool loadProjectFromFile (const juce::File& file);
     void resetProjectData();
     void updateProjectLabel();
 
@@ -146,6 +147,7 @@ private:
     void clearSelectedScene();
 
     void setPerformanceMode (bool useSongMode);
+    void updateModeVisibility();
     void addSelectedSceneToSong();
     void removeSelectedSongStep();
     void toggleSelectedSongStepHold();
@@ -159,7 +161,6 @@ private:
     void refreshTrackButtons();
     void refreshSceneButtons();
     void refreshSceneEditor();
-    void refreshTrackNameEditors();
 
     void triggerScene (int sceneIndex);
     void startSceneNow (int sceneIndex);

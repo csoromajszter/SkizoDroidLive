@@ -23,10 +23,16 @@ int itemIdToBars (int itemId)
         case 3: return 4;
         case 4: return 8;
         case 5: return 16;
-        default: break;
+        default: return 4;
     }
+}
 
-    return 4;
+juce::String shortName (const juce::File& file)
+{
+    auto s = file.getFileNameWithoutExtension();
+    if (s.length() > 16)
+        s = s.substring (0, 13) + "...";
+    return s;
 }
 }
 
@@ -34,6 +40,7 @@ MainComponent::MainComponent()
 {
     formatManager.registerBasicFormats();
     initialiseDefaults();
+    createFreshWorkingFolder();
 
     logoDrawable = juce::Drawable::createFromImageData (
         BinaryData::skizodroid_logo_header_png,
@@ -41,7 +48,7 @@ MainComponent::MainComponent()
 
     titleLabel.setText ("SkizoDroid Live", juce::dontSendNotification);
     titleLabel.setJustificationType (juce::Justification::centredLeft);
-    titleLabel.setFont (juce::FontOptions (30.0f, juce::Font::bold));
+    titleLabel.setFont (juce::FontOptions (29.0f, juce::Font::bold));
     addAndMakeVisible (titleLabel);
 
     statusLabel.setJustificationType (juce::Justification::centredLeft);
@@ -61,15 +68,15 @@ MainComponent::MainComponent()
     bpmSlider.setRange (40.0, 240.0, 1.0);
     bpmSlider.setValue (120.0);
     bpmSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 70, 24);
+    bpmSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 22);
     bpmSlider.onValueChange = [this]
     {
-        if (! loadingProjectUi && projectFile.existsAsFile())
+        if (! loadingProjectUi && projectFile != juce::File())
             saveProject();
     };
     addAndMakeVisible (bpmSlider);
 
-    sceneNameLabel.setText ("SCENE NAME", juce::dontSendNotification);
+    sceneNameLabel.setText ("SCENE", juce::dontSendNotification);
     sceneNameLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (sceneNameLabel);
 
@@ -83,7 +90,7 @@ MainComponent::MainComponent()
         refreshSceneButtons();
         refreshSongUi();
 
-        if (projectFile.existsAsFile())
+        if (projectFile != juce::File())
             saveProject();
     };
     addAndMakeVisible (sceneNameEditor);
@@ -106,7 +113,7 @@ MainComponent::MainComponent()
         refreshSceneButtons();
         updateStatus();
 
-        if (projectFile.existsAsFile())
+        if (projectFile != juce::File())
             saveProject();
     };
     addAndMakeVisible (sceneBarsBox);
@@ -115,32 +122,25 @@ MainComponent::MainComponent()
     openProjectButton.onClick = [this] { openProject(); };
     saveProjectButton.onClick = [this] { saveProject(); };
     saveAsProjectButton.onClick = [this] { saveProjectAs(); };
-
-    addAndMakeVisible (newProjectButton);
-    addAndMakeVisible (openProjectButton);
-    addAndMakeVisible (saveProjectButton);
-    addAndMakeVisible (saveAsProjectButton);
-
     playButton.onClick = [this] { startPlayback(); };
     stopButton.onClick = [this] { stopAll(); };
-    addAndMakeVisible (playButton);
-    addAndMakeVisible (stopButton);
+    patternModeButton.onClick = [this] { setPerformanceMode (false); };
+    songModeButton.onClick = [this] { setPerformanceMode (true); };
+
+    for (auto* button : { &newProjectButton, &openProjectButton, &saveProjectButton, &saveAsProjectButton,
+                           &playButton, &stopButton, &patternModeButton, &songModeButton })
+        addAndMakeVisible (*button);
 
     copySceneButton.onClick = [this] { copySelectedScene(); };
     pasteSceneButton.onClick = [this] { pasteSceneToSelected(); };
     clearSceneButton.onClick = [this] { clearSelectedScene(); };
+    addToSongButton.onClick = [this] { addSelectedSceneToSong(); };
 
-    addAndMakeVisible (copySceneButton);
-    addAndMakeVisible (pasteSceneButton);
-    addAndMakeVisible (clearSceneButton);
+    for (auto* button : { &copySceneButton, &pasteSceneButton, &clearSceneButton, &addToSongButton })
+        addAndMakeVisible (*button);
 
-    copySceneButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (44, 52, 68));
-    pasteSceneButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (44, 52, 68));
     clearSceneButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (68, 44, 44));
 
-    patternModeButton.onClick = [this] { setPerformanceMode (false); };
-    songModeButton.onClick = [this] { setPerformanceMode (true); };
-    addToSongButton.onClick = [this] { addSelectedSceneToSong(); };
     removeSongStepButton.onClick = [this] { removeSelectedSongStep(); };
     holdSongStepButton.onClick = [this] { toggleSelectedSongStepHold(); };
     continueSongButton.onClick = [this] { continueSong(); };
@@ -155,21 +155,17 @@ MainComponent::MainComponent()
     };
     nextSongPageButton.onClick = [this]
     {
-        const int maxPage = juce::jmax (0, (juce::jmax (songStepCount, 1) - 1) / visibleSongSteps);
-        if (songPage < maxPage)
+        if (songPage < 1)
         {
             ++songPage;
             refreshSongUi();
         }
     };
 
-    for (auto* button : { &patternModeButton, &songModeButton, &addToSongButton,
-                           &removeSongStepButton, &holdSongStepButton, &continueSongButton,
+    for (auto* button : { &removeSongStepButton, &holdSongStepButton, &continueSongButton,
                            &clearSongButton, &prevSongPageButton, &nextSongPageButton })
         addAndMakeVisible (*button);
 
-    patternModeButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (70, 70, 88));
-    songModeButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (38, 38, 44));
     holdSongStepButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (86, 64, 34));
     continueSongButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (42, 72, 48));
     clearSongButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (68, 44, 44));
@@ -188,27 +184,15 @@ MainComponent::MainComponent()
 
     for (int i = 0; i < numTracks; ++i)
     {
-        trackNameEditors[i].setText (trackNames[i], false);
-        trackNameEditors[i].setJustification (juce::Justification::centred);
-        trackNameEditors[i].onTextChange = [this, i]
-        {
-            if (loadingProjectUi)
-                return;
-
-            const auto newName = trackNameEditors[i].getText().trim();
-            trackNames[i] = newName.isNotEmpty() ? newName : ("T" + juce::String (i + 1));
-            refreshTrackButtons();
-
-            if (projectFile.existsAsFile())
-                saveProject();
-        };
-        addAndMakeVisible (trackNameEditors[i]);
+        trackLabels[i].setText ("T" + juce::String (i + 1), juce::dontSendNotification);
+        trackLabels[i].setJustificationType (juce::Justification::centred);
+        trackLabels[i].setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        addAndMakeVisible (trackLabels[i]);
 
         loadButtons[i].onClick = [this, i] { chooseLoopForTrack (i); };
-        loadButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (42, 42, 48));
         addAndMakeVisible (loadButtons[i]);
 
-        clearButtons[i].setButtonText ("CLEAR");
+        clearButtons[i].setButtonText ("X");
         clearButtons[i].onClick = [this, i] { clearClipForTrack (i); };
         clearButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (68, 44, 44));
         addAndMakeVisible (clearButtons[i]);
@@ -225,18 +209,17 @@ MainComponent::MainComponent()
             else
                 selectSceneForEditing (i);
         };
-
         addAndMakeVisible (sceneButtons[i]);
     }
 
-    setSize (1500, 980);
+    setSize (1500, 940);
     setAudioChannels (0, 2);
 
-    refreshTrackNameEditors();
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
     refreshSongUi();
+    updateModeVisibility();
     updateProjectLabel();
     updateStatus();
 }
@@ -253,378 +236,48 @@ MainComponent::~MainComponent()
     }
 
     mixer.removeAllInputs();
+
+    if (workingFolder.isDirectory())
+        workingFolder.deleteRecursively();
 }
 
 void MainComponent::initialiseDefaults()
 {
-    const std::array<juce::String, numTracks> defaults
-    {
-        "DRUMS", "BASS", "SYNTH A", "SYNTH B",
-        "NOISE", "ATMOS", "FX", "VOCAL",
-        "TRACK 9", "TRACK 10", "TRACK 11", "TRACK 12",
-        "TRACK 13", "TRACK 14", "TRACK 15", "TRACK 16"
-    };
-
-    trackNames = defaults;
-
     for (int i = 0; i < numScenes; ++i)
     {
         sceneNames[i] = "Scene " + juce::String (i + 1);
         sceneBars[i] = 4;
     }
-}
 
-void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRate)
-{
-    currentSampleRate = sampleRate;
-    mixer.prepareToPlay (samplesPerBlockExpected, sampleRate);
-}
-
-void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
-{
-    mixer.getNextAudioBlock (bufferToFill);
-
-    if (! playing)
-        return;
-
-    samplesSinceSceneStart += bufferToFill.numSamples;
-    const auto samplesPerScene = getSamplesPerScene (currentScene);
-
-    if (samplesPerScene > 0.0 && samplesSinceSceneStart >= samplesPerScene)
-    {
-        samplesSinceSceneStart = std::fmod (samplesSinceSceneStart, samplesPerScene);
-
-        if (songMode && currentSongStep >= 0)
-        {
-            const bool stepIsHold = songSteps[currentSongStep].hold;
-            if (! stepIsHold || releaseHoldAtBoundary)
-            {
-                releaseHoldAtBoundary = false;
-                juce::MessageManager::callAsync (
-                    [safeThis = juce::Component::SafePointer<MainComponent> (this)]
-                    {
-                        if (safeThis != nullptr)
-                            safeThis->advanceSongAtBoundary();
-                    });
-            }
-        }
-        else if (queuedScene >= 0)
-        {
-            const int sceneToLaunch = queuedScene;
-            queuedScene = -1;
-
-            juce::MessageManager::callAsync (
-                [safeThis = juce::Component::SafePointer<MainComponent> (this), sceneToLaunch]
-                {
-                    if (safeThis != nullptr)
-                        safeThis->startSceneNow (sceneToLaunch);
-                });
-        }
-    }
-}
-
-void MainComponent::releaseResources()
-{
-    mixer.releaseResources();
-}
-
-void MainComponent::paint (juce::Graphics& g)
-{
-    g.fillAll (juce::Colour::fromRGB (14, 14, 16));
-    g.setColour (juce::Colour::fromRGB (46, 46, 52));
-    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (16.0f), 10.0f, 2.0f);
-
-    if (logoDrawable != nullptr)
-        logoDrawable->drawWithin (g, headerLogoBounds.toFloat(), juce::RectanglePlacement::centred, 1.0f);
-}
-
-void MainComponent::resized()
-{
-    auto area = getLocalBounds().reduced (20);
-
-    auto header = area.removeFromTop (56);
-    headerLogoBounds = header.removeFromLeft (74).reduced (0, 4);
-    titleLabel.setBounds (header.removeFromLeft (330));
-    header.removeFromLeft (16);
-    selectedSceneLabel.setBounds (header);
-
-    statusLabel.setBounds (area.removeFromTop (24));
-
-    auto projectRow = area.removeFromTop (40);
-    newProjectButton.setBounds (projectRow.removeFromLeft (120).reduced (3));
-    openProjectButton.setBounds (projectRow.removeFromLeft (80).reduced (3));
-    saveProjectButton.setBounds (projectRow.removeFromLeft (80).reduced (3));
-    saveAsProjectButton.setBounds (projectRow.removeFromLeft (90).reduced (3));
-    projectLabel.setBounds (projectRow.reduced (8, 0));
-
-    auto transport = area.removeFromTop (40);
-    playButton.setBounds (transport.removeFromLeft (90).reduced (3));
-    stopButton.setBounds (transport.removeFromLeft (90).reduced (3));
-    bpmLabel.setBounds (transport.removeFromLeft (48));
-    bpmSlider.setBounds (transport.removeFromLeft (210).reduced (3));
-
-    auto sceneEditRow = area.removeFromTop (40);
-    sceneNameLabel.setBounds (sceneEditRow.removeFromLeft (95));
-    sceneNameEditor.setBounds (sceneEditRow.removeFromLeft (240).reduced (3));
-    sceneBarsLabel.setBounds (sceneEditRow.removeFromLeft (65));
-    sceneBarsBox.setBounds (sceneEditRow.removeFromLeft (100).reduced (3));
-    copySceneButton.setBounds (sceneEditRow.removeFromLeft (115).reduced (3));
-    pasteSceneButton.setBounds (sceneEditRow.removeFromLeft (120).reduced (3));
-    clearSceneButton.setBounds (sceneEditRow.removeFromLeft (120).reduced (3));
-
-    area.removeFromTop (6);
-
-    auto songControlRow = area.removeFromTop (38);
-    patternModeButton.setBounds (songControlRow.removeFromLeft (120).reduced (3));
-    songModeButton.setBounds (songControlRow.removeFromLeft (110).reduced (3));
-    addToSongButton.setBounds (songControlRow.removeFromLeft (120).reduced (3));
-    removeSongStepButton.setBounds (songControlRow.removeFromLeft (95).reduced (3));
-    holdSongStepButton.setBounds (songControlRow.removeFromLeft (105).reduced (3));
-    continueSongButton.setBounds (songControlRow.removeFromLeft (100).reduced (3));
-    clearSongButton.setBounds (songControlRow.removeFromLeft (105).reduced (3));
-    prevSongPageButton.setBounds (songControlRow.removeFromLeft (36).reduced (3));
-    songPageLabel.setBounds (songControlRow.removeFromLeft (90));
-    nextSongPageButton.setBounds (songControlRow.removeFromLeft (36).reduced (3));
-
-    auto songStepRow = area.removeFromTop (54);
-    const int songCellW = songStepRow.getWidth() / visibleSongSteps;
-    for (int i = 0; i < visibleSongSteps; ++i)
-    {
-        songStepButtons[i].setBounds (songStepRow.getX() + i * songCellW + 2,
-                                      songStepRow.getY() + 2,
-                                      songCellW - 4,
-                                      songStepRow.getHeight() - 4);
-    }
-
-    area.removeFromTop (4);
-
-    auto trackArea = area.removeFromTop (154);
-    const int trackColumns = 8;
-    const int trackRows = 2;
-    const int trackWidth = trackArea.getWidth() / trackColumns;
-    const int trackHeight = trackArea.getHeight() / trackRows;
-
-    for (int i = 0; i < numTracks; ++i)
-    {
-        const int col = i % trackColumns;
-        const int row = i / trackColumns;
-
-        auto cell = juce::Rectangle<int> (trackArea.getX() + col * trackWidth + 4,
-                                          trackArea.getY() + row * trackHeight + 4,
-                                          trackWidth - 8,
-                                          trackHeight - 8);
-
-        trackNameEditors[i].setBounds (cell.removeFromTop (24));
-        cell.removeFromTop (3);
-        clearButtons[i].setBounds (cell.removeFromBottom (22));
-        cell.removeFromBottom (3);
-        loadButtons[i].setBounds (cell);
-    }
-
-    area.removeFromTop (6);
-
-    auto grid = area.reduced (4);
-    const int cellW = grid.getWidth() / sceneColumns;
-    const int cellH = grid.getHeight() / sceneRows;
-
-    for (int i = 0; i < numScenes; ++i)
-    {
-        const int col = i % sceneColumns;
-        const int row = i / sceneColumns;
-
-        sceneButtons[i].setBounds (grid.getX() + col * cellW + 3,
-                                   grid.getY() + row * cellH + 3,
-                                   cellW - 6,
-                                   cellH - 6);
-    }
-}
-
-void MainComponent::resetProjectData()
-{
-    stopAll();
-
-    for (auto& scene : scenes)
-        for (auto& file : scene)
-            file = {};
-
-    initialiseDefaults();
-    selectedScene = 0;
-    currentScene = 0;
-    queuedScene = -1;
-    songStepCount = 0;
-    selectedSongStep = -1;
-    currentSongStep = -1;
-    songPage = 0;
-    releaseHoldAtBoundary = false;
     for (auto& step : songSteps)
         step = {};
-    bpmSlider.setValue (120.0, juce::dontSendNotification);
-
-    refreshTrackNameEditors();
-    refreshTrackButtons();
-    refreshSceneButtons();
-    refreshSceneEditor();
-    refreshSongUi();
 }
 
-void MainComponent::newProject()
+void MainComponent::createFreshWorkingFolder()
 {
-    fileChooser = std::make_unique<juce::FileChooser> (
-        "Create SkizoDroid Live project",
-        juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-            .getChildFile ("SkizoDroid Song.sklive"),
-        "*.sklive");
+    if (workingFolder.isDirectory())
+        workingFolder.deleteRecursively();
 
-    const auto chooserFlags = juce::FileBrowserComponent::saveMode
-                            | juce::FileBrowserComponent::canSelectFiles;
+    const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory)
+        .getChildFile ("SkizoDroidLiveCache");
+    root.createDirectory();
 
-    fileChooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& chooser)
-    {
-        auto chosen = chooser.getResult();
-        if (chosen == juce::File())
-            return;
-
-        chosen = chosen.withFileExtension ("sklive");
-        const auto baseName = chosen.getFileNameWithoutExtension();
-        const auto container = chosen.getParentDirectory();
-
-        projectFolder = container.getChildFile (baseName);
-        projectFolder.createDirectory();
-
-        audioFolder = projectFolder.getChildFile ("Audio");
-        audioFolder.createDirectory();
-
-        projectFile = projectFolder.getChildFile (baseName + ".sklive");
-
-        resetProjectData();
-        saveProject();
-        updateProjectLabel();
-        updateStatus();
-    });
+    workingFolder = root.getNonexistentChildFile ("Project", "", false);
+    workingFolder.createDirectory();
+    audioFolder = workingFolder.getChildFile ("Audio");
+    audioFolder.createDirectory();
 }
 
-void MainComponent::openProject()
+bool MainComponent::writeProjectXml()
 {
-    fileChooser = std::make_unique<juce::FileChooser> (
-        "Open SkizoDroid Live project",
-        juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
-        "*.sklive");
-
-    const auto chooserFlags = juce::FileBrowserComponent::openMode
-                            | juce::FileBrowserComponent::canSelectFiles;
-
-    fileChooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& chooser)
-    {
-        const auto file = chooser.getResult();
-        if (! file.existsAsFile())
-            return;
-
-        if (! loadProjectFromFile (file))
-            statusLabel.setText ("COULD NOT OPEN PROJECT", juce::dontSendNotification);
-    });
-}
-
-void MainComponent::saveProject()
-{
-    if (! projectFile.existsAsFile() && projectFile == juce::File())
-    {
-        statusLabel.setText ("CREATE A PROJECT FIRST", juce::dontSendNotification);
-        return;
-    }
-
-    if (saveProjectToFile (projectFile))
-    {
-        updateProjectLabel();
-        updateStatus();
-    }
-    else
-    {
-        statusLabel.setText ("PROJECT SAVE FAILED", juce::dontSendNotification);
-    }
-}
-
-void MainComponent::saveProjectAs()
-{
-    if (projectFile == juce::File())
-    {
-        newProject();
-        return;
-    }
-
-    fileChooser = std::make_unique<juce::FileChooser> (
-        "Save SkizoDroid Live project as",
-        projectFile.getParentDirectory().getParentDirectory()
-            .getChildFile (projectFile.getFileName()),
-        "*.sklive");
-
-    const auto chooserFlags = juce::FileBrowserComponent::saveMode
-                            | juce::FileBrowserComponent::canSelectFiles;
-
-    fileChooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& chooser)
-    {
-        auto chosen = chooser.getResult();
-        if (chosen == juce::File())
-            return;
-
-        chosen = chosen.withFileExtension ("sklive");
-        const auto baseName = chosen.getFileNameWithoutExtension();
-        const auto newProjectFolder = chosen.getParentDirectory().getChildFile (baseName);
-        const auto newAudioFolder = newProjectFolder.getChildFile ("Audio");
-        const auto newProjectFile = newProjectFolder.getChildFile (baseName + ".sklive");
-
-        newProjectFolder.createDirectory();
-        newAudioFolder.createDirectory();
-
-        if (audioFolder.isDirectory())
-            audioFolder.copyDirectoryTo (newAudioFolder);
-
-        const auto oldAudioFolder = audioFolder;
-
-        for (auto& scene : scenes)
-        {
-            for (auto& file : scene)
-            {
-                if (! file.existsAsFile())
-                    continue;
-
-                if (file.isAChildOf (oldAudioFolder))
-                {
-                    const auto relative = file.getRelativePathFrom (oldAudioFolder);
-                    file = newAudioFolder.getChildFile (relative);
-                }
-            }
-        }
-
-        projectFolder = newProjectFolder;
-        audioFolder = newAudioFolder;
-        projectFile = newProjectFile;
-
-        saveProject();
-        refreshTrackButtons();
-        refreshSceneButtons();
-        updateProjectLabel();
-    });
-}
-
-bool MainComponent::saveProjectToFile (const juce::File& file)
-{
-    if (file == juce::File())
+    if (! workingFolder.isDirectory())
         return false;
 
     juce::XmlElement root ("SkizoDroidLiveProject");
-    root.setAttribute ("version", "0.4.2");
+    root.setAttribute ("version", "0.6");
     root.setAttribute ("bpm", bpmSlider.getValue());
 
-    auto* tracksXml = root.createNewChildElement ("Tracks");
-    for (int i = 0; i < numTracks; ++i)
-    {
-        auto* trackXml = tracksXml->createNewChildElement ("Track");
-        trackXml->setAttribute ("index", i);
-        trackXml->setAttribute ("name", trackNames[i]);
-    }
-
     auto* scenesXml = root.createNewChildElement ("Scenes");
-
     for (int sceneIndex = 0; sceneIndex < numScenes; ++sceneIndex)
     {
         auto* sceneXml = scenesXml->createNewChildElement ("Scene");
@@ -645,52 +298,36 @@ bool MainComponent::saveProjectToFile (const juce::File& file)
     }
 
     auto* songXml = root.createNewChildElement ("Song");
-    songXml->setAttribute ("stepCount", songStepCount);
     for (int i = 0; i < songStepCount; ++i)
     {
         auto* stepXml = songXml->createNewChildElement ("Step");
-        stepXml->setAttribute ("index", i);
         stepXml->setAttribute ("scene", songSteps[i].sceneIndex);
         stepXml->setAttribute ("hold", songSteps[i].hold);
     }
 
-    file.getParentDirectory().createDirectory();
-    return file.replaceWithText (root.toString());
+    return workingFolder.getChildFile ("project.xml").replaceWithText (root.toString());
 }
 
-bool MainComponent::loadProjectFromFile (const juce::File& file)
+bool MainComponent::readProjectXml()
 {
-    juce::XmlDocument document (file);
-    auto root = document.getDocumentElement();
-
-    if (root == nullptr || ! root->hasTagName ("SkizoDroidLiveProject"))
+    const auto xmlFile = workingFolder.getChildFile ("project.xml");
+    if (! xmlFile.existsAsFile())
         return false;
 
-    stopAll();
-
-    projectFile = file;
-    projectFolder = file.getParentDirectory();
-    audioFolder = projectFolder.getChildFile ("Audio");
-    audioFolder.createDirectory();
+    juce::XmlDocument document (xmlFile);
+    auto root = document.getDocumentElement();
+    if (root == nullptr || ! root->hasTagName ("SkizoDroidLiveProject"))
+        return false;
 
     for (auto& scene : scenes)
         for (auto& clip : scene)
             clip = {};
 
     initialiseDefaults();
+    songStepCount = 0;
 
     loadingProjectUi = true;
     bpmSlider.setValue (root->getDoubleAttribute ("bpm", 120.0), juce::dontSendNotification);
-
-    if (auto* tracksXml = root->getChildByName ("Tracks"))
-    {
-        forEachXmlChildElementWithTagName (*tracksXml, trackXml, "Track")
-        {
-            const int index = trackXml->getIntAttribute ("index", -1);
-            if (index >= 0 && index < numTracks)
-                trackNames[index] = trackXml->getStringAttribute ("name", trackNames[index]);
-        }
-    }
 
     if (auto* scenesXml = root->getChildByName ("Scenes"))
     {
@@ -700,32 +337,27 @@ bool MainComponent::loadProjectFromFile (const juce::File& file)
             if (sceneIndex < 0 || sceneIndex >= numScenes)
                 continue;
 
-            sceneNames[sceneIndex] = sceneXml->getStringAttribute (
-                "name", "Scene " + juce::String (sceneIndex + 1));
+            sceneNames[sceneIndex] = sceneXml->getStringAttribute ("name", "Scene " + juce::String (sceneIndex + 1));
             sceneBars[sceneIndex] = juce::jlimit (1, 16, sceneXml->getIntAttribute ("bars", 4));
 
             forEachXmlChildElementWithTagName (*sceneXml, clipXml, "Clip")
             {
                 const int trackIndex = clipXml->getIntAttribute ("track", -1);
-                if (trackIndex < 0 || trackIndex >= numTracks)
-                    continue;
-
-                scenes[sceneIndex][trackIndex] = resolveStoredPath (
-                    clipXml->getStringAttribute ("path"));
+                if (trackIndex >= 0 && trackIndex < numTracks)
+                    scenes[sceneIndex][trackIndex] = resolveStoredPath (clipXml->getStringAttribute ("path"));
             }
         }
     }
-
-    songStepCount = 0;
-    for (auto& step : songSteps)
-        step = {};
 
     if (auto* songXml = root->getChildByName ("Song"))
     {
         forEachXmlChildElementWithTagName (*songXml, stepXml, "Step")
         {
+            if (songStepCount >= maxSongSteps)
+                break;
+
             const int sceneIndex = stepXml->getIntAttribute ("scene", -1);
-            if (sceneIndex < 0 || sceneIndex >= numScenes || songStepCount >= maxSongSteps)
+            if (sceneIndex < 0 || sceneIndex >= numScenes)
                 continue;
 
             songSteps[songStepCount].sceneIndex = sceneIndex;
@@ -735,7 +367,6 @@ bool MainComponent::loadProjectFromFile (const juce::File& file)
     }
 
     loadingProjectUi = false;
-
     selectedScene = 0;
     currentScene = 0;
     queuedScene = -1;
@@ -744,61 +375,365 @@ bool MainComponent::loadProjectFromFile (const juce::File& file)
     songPage = 0;
     releaseHoldAtBoundary = false;
 
-    refreshTrackNameEditors();
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
     refreshSongUi();
-    updateProjectLabel();
-    updateStatus();
-
     return true;
+}
+
+bool MainComponent::packWorkingFolderToProject (const juce::File& targetFile)
+{
+    if (! writeProjectXml())
+        return false;
+
+    juce::ZipFile::Builder builder;
+    juce::Array<juce::File> files;
+    workingFolder.findChildFiles (files, juce::File::findFiles, true);
+
+    for (const auto& file : files)
+    {
+        const auto relativePath = file.getRelativePathFrom (workingFolder).replaceCharacter ('\\', '/');
+        builder.addFile (file, 0, relativePath);
+    }
+
+    auto tempFile = targetFile.getSiblingFile (targetFile.getFileName() + ".tmp");
+    tempFile.deleteFile();
+    tempFile.getParentDirectory().createDirectory();
+
+    juce::FileOutputStream out (tempFile);
+    if (! out.openedOk())
+        return false;
+
+    out.setPosition (0);
+    out.truncate();
+    const bool ok = builder.writeToStream (out, nullptr);
+    out.flush();
+
+    if (! ok)
+    {
+        tempFile.deleteFile();
+        return false;
+    }
+
+    targetFile.deleteFile();
+    return tempFile.moveFileTo (targetFile);
+}
+
+bool MainComponent::unpackProjectToWorkingFolder (const juce::File& sourceFile)
+{
+    if (! sourceFile.existsAsFile())
+        return false;
+
+    createFreshWorkingFolder();
+    juce::ZipFile zip (sourceFile);
+    const auto result = zip.uncompressTo (workingFolder, true);
+    if (result.failed())
+        return false;
+
+    audioFolder = workingFolder.getChildFile ("Audio");
+    audioFolder.createDirectory();
+    return readProjectXml();
+}
+
+void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRate)
+{
+    currentSampleRate = sampleRate;
+    mixer.prepareToPlay (samplesPerBlockExpected, sampleRate);
+}
+
+void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
+{
+    mixer.getNextAudioBlock (bufferToFill);
+    if (! playing)
+        return;
+
+    samplesSinceSceneStart += bufferToFill.numSamples;
+    const auto samplesPerScene = getSamplesPerScene (currentScene);
+
+    if (samplesPerScene > 0.0 && samplesSinceSceneStart >= samplesPerScene)
+    {
+        samplesSinceSceneStart = std::fmod (samplesSinceSceneStart, samplesPerScene);
+
+        if (songMode && currentSongStep >= 0)
+        {
+            const bool stepIsHold = songSteps[currentSongStep].hold;
+            if (! stepIsHold || releaseHoldAtBoundary)
+            {
+                releaseHoldAtBoundary = false;
+                juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this)]
+                {
+                    if (safeThis != nullptr)
+                        safeThis->advanceSongAtBoundary();
+                });
+            }
+        }
+        else if (queuedScene >= 0)
+        {
+            const int sceneToLaunch = queuedScene;
+            queuedScene = -1;
+            juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this), sceneToLaunch]
+            {
+                if (safeThis != nullptr)
+                    safeThis->startSceneNow (sceneToLaunch);
+            });
+        }
+    }
+}
+
+void MainComponent::releaseResources()
+{
+    mixer.releaseResources();
+}
+
+void MainComponent::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour::fromRGB (14, 14, 16));
+    g.setColour (juce::Colour::fromRGB (46, 46, 52));
+    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (14.0f), 10.0f, 2.0f);
+
+    if (logoDrawable != nullptr)
+        logoDrawable->drawWithin (g, headerLogoBounds.toFloat(), juce::RectanglePlacement::centred, 1.0f);
+}
+
+void MainComponent::resized()
+{
+    auto area = getLocalBounds().reduced (16);
+
+    auto header = area.removeFromTop (50);
+    headerLogoBounds = header.removeFromLeft (64).reduced (0, 4);
+    titleLabel.setBounds (header.removeFromLeft (250));
+    selectedSceneLabel.setBounds (header);
+
+    auto menuRow = area.removeFromTop (30);
+    newProjectButton.setBounds (menuRow.removeFromLeft (66).reduced (2));
+    openProjectButton.setBounds (menuRow.removeFromLeft (66).reduced (2));
+    saveProjectButton.setBounds (menuRow.removeFromLeft (66).reduced (2));
+    saveAsProjectButton.setBounds (menuRow.removeFromLeft (78).reduced (2));
+    playButton.setBounds (menuRow.removeFromLeft (64).reduced (2));
+    stopButton.setBounds (menuRow.removeFromLeft (64).reduced (2));
+    bpmLabel.setBounds (menuRow.removeFromLeft (40));
+    bpmSlider.setBounds (menuRow.removeFromLeft (185).reduced (2));
+    patternModeButton.setBounds (menuRow.removeFromLeft (82).reduced (2));
+    songModeButton.setBounds (menuRow.removeFromLeft (70).reduced (2));
+    projectLabel.setBounds (menuRow.reduced (8, 0));
+
+    statusLabel.setBounds (area.removeFromTop (22));
+
+    if (! songMode)
+    {
+        auto sceneEditRow = area.removeFromTop (32);
+        sceneNameLabel.setBounds (sceneEditRow.removeFromLeft (56));
+        sceneNameEditor.setBounds (sceneEditRow.removeFromLeft (220).reduced (2));
+        sceneBarsLabel.setBounds (sceneEditRow.removeFromLeft (60));
+        sceneBarsBox.setBounds (sceneEditRow.removeFromLeft (92).reduced (2));
+        copySceneButton.setBounds (sceneEditRow.removeFromLeft (72).reduced (2));
+        pasteSceneButton.setBounds (sceneEditRow.removeFromLeft (72).reduced (2));
+        clearSceneButton.setBounds (sceneEditRow.removeFromLeft (96).reduced (2));
+        addToSongButton.setBounds (sceneEditRow.removeFromLeft (104).reduced (2));
+
+        area.removeFromTop (3);
+        auto trackArea = area.removeFromTop (108);
+        const int trackColumns = 8;
+        const int trackWidth = trackArea.getWidth() / trackColumns;
+        const int trackHeight = trackArea.getHeight() / 2;
+
+        for (int i = 0; i < numTracks; ++i)
+        {
+            const int col = i % 8;
+            const int row = i / 8;
+            auto cell = juce::Rectangle<int> (trackArea.getX() + col * trackWidth + 3,
+                                              trackArea.getY() + row * trackHeight + 2,
+                                              trackWidth - 6,
+                                              trackHeight - 4);
+            trackLabels[i].setBounds (cell.removeFromLeft (28));
+            clearButtons[i].setBounds (cell.removeFromRight (26).reduced (1));
+            loadButtons[i].setBounds (cell.reduced (1));
+        }
+
+        area.removeFromTop (3);
+        auto grid = area.reduced (3);
+        const int cellW = grid.getWidth() / sceneColumns;
+        const int cellH = grid.getHeight() / sceneRows;
+
+        for (int i = 0; i < numScenes; ++i)
+        {
+            const int col = i % sceneColumns;
+            const int row = i / sceneColumns;
+            sceneButtons[i].setBounds (grid.getX() + col * cellW + 3,
+                                       grid.getY() + row * cellH + 3,
+                                       cellW - 6,
+                                       cellH - 6);
+        }
+    }
+    else
+    {
+        auto songControls = area.removeFromTop (34);
+        removeSongStepButton.setBounds (songControls.removeFromLeft (82).reduced (2));
+        holdSongStepButton.setBounds (songControls.removeFromLeft (96).reduced (2));
+        continueSongButton.setBounds (songControls.removeFromLeft (94).reduced (2));
+        clearSongButton.setBounds (songControls.removeFromLeft (96).reduced (2));
+        prevSongPageButton.setBounds (songControls.removeFromLeft (34).reduced (2));
+        songPageLabel.setBounds (songControls.removeFromLeft (90));
+        nextSongPageButton.setBounds (songControls.removeFromLeft (34).reduced (2));
+
+        area.removeFromTop (4);
+        auto grid = area.reduced (3);
+        const int cellW = grid.getWidth() / 8;
+        const int cellH = grid.getHeight() / 8;
+
+        for (int i = 0; i < visibleSongSteps; ++i)
+        {
+            const int col = i % 8;
+            const int row = i / 8;
+            songStepButtons[i].setBounds (grid.getX() + col * cellW + 3,
+                                          grid.getY() + row * cellH + 3,
+                                          cellW - 6,
+                                          cellH - 6);
+        }
+    }
+}
+
+void MainComponent::resetProjectData()
+{
+    stopAll();
+    for (auto& scene : scenes)
+        for (auto& clip : scene)
+            clip = {};
+
+    initialiseDefaults();
+    selectedScene = 0;
+    currentScene = 0;
+    queuedScene = -1;
+    songStepCount = 0;
+    selectedSongStep = -1;
+    currentSongStep = -1;
+    songPage = 0;
+    releaseHoldAtBoundary = false;
+    bpmSlider.setValue (120.0, juce::dontSendNotification);
+    createFreshWorkingFolder();
+    refreshTrackButtons();
+    refreshSceneButtons();
+    refreshSceneEditor();
+    refreshSongUi();
+}
+
+void MainComponent::newProject()
+{
+    fileChooser = std::make_unique<juce::FileChooser> (
+        "Create SkizoDroid Live project",
+        juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("SkizoDroid Song.sklive"),
+        "*.sklive");
+
+    const auto flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles;
+    fileChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    {
+        auto chosen = chooser.getResult();
+        if (chosen == juce::File()) return;
+        chosen = chosen.withFileExtension ("sklive");
+
+        resetProjectData();
+        projectFile = chosen;
+        saveProject();
+        updateProjectLabel();
+        updateStatus();
+    });
+}
+
+void MainComponent::openProject()
+{
+    fileChooser = std::make_unique<juce::FileChooser> (
+        "Open SkizoDroid Live project",
+        juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+        "*.sklive");
+
+    const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+    fileChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    {
+        const auto file = chooser.getResult();
+        if (! file.existsAsFile()) return;
+
+        stopAll();
+        if (! unpackProjectToWorkingFolder (file))
+        {
+            statusLabel.setText ("COULD NOT OPEN PROJECT", juce::dontSendNotification);
+            return;
+        }
+
+        projectFile = file;
+        updateProjectLabel();
+        updateStatus();
+    });
+}
+
+void MainComponent::saveProject()
+{
+    if (projectFile == juce::File())
+    {
+        newProject();
+        return;
+    }
+
+    if (! packWorkingFolderToProject (projectFile))
+        statusLabel.setText ("PROJECT SAVE FAILED", juce::dontSendNotification);
+    else
+    {
+        updateProjectLabel();
+        updateStatus();
+    }
+}
+
+void MainComponent::saveProjectAs()
+{
+    fileChooser = std::make_unique<juce::FileChooser> (
+        "Save SkizoDroid Live project as",
+        projectFile != juce::File() ? projectFile : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+        "*.sklive");
+
+    const auto flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles;
+    fileChooser->launchAsync (flags, [this] (const juce::FileChooser& chooser)
+    {
+        auto chosen = chooser.getResult();
+        if (chosen == juce::File()) return;
+        chosen = chosen.withFileExtension ("sklive");
+
+        if (packWorkingFolderToProject (chosen))
+        {
+            projectFile = chosen;
+            updateProjectLabel();
+            updateStatus();
+        }
+    });
 }
 
 juce::File MainComponent::importAudioIntoProject (const juce::File& sourceFile)
 {
-    if (! sourceFile.existsAsFile() || projectFile == juce::File())
-        return {};
-
+    if (! sourceFile.existsAsFile()) return {};
     audioFolder.createDirectory();
 
     auto target = audioFolder.getChildFile (sourceFile.getFileName());
-
     if (target.existsAsFile())
     {
-        if (target.getSize() == sourceFile.getSize())
-            return target;
-
+        if (target.getSize() == sourceFile.getSize()) return target;
         target = target.getNonexistentSibling (false);
     }
 
-    if (! sourceFile.copyFileTo (target))
-        return {};
-
-    return target;
+    return sourceFile.copyFileTo (target) ? target : juce::File();
 }
 
 juce::String MainComponent::getStoredPathForFile (const juce::File& file) const
 {
-    if (projectFolder.isDirectory() && file.isAChildOf (projectFolder))
-        return file.getRelativePathFrom (projectFolder);
-
-    return file.getFullPathName();
+    return file.getRelativePathFrom (workingFolder).replaceCharacter ('\\', '/');
 }
 
 juce::File MainComponent::resolveStoredPath (const juce::String& storedPath) const
 {
-    if (juce::File::isAbsolutePath (storedPath))
-        return juce::File (storedPath);
-
-    return projectFolder.getChildFile (storedPath);
+    return workingFolder.getChildFile (storedPath);
 }
 
 void MainComponent::selectSceneForEditing (int sceneIndex)
 {
-    if (sceneIndex < 0 || sceneIndex >= numScenes)
-        return;
-
+    if (sceneIndex < 0 || sceneIndex >= numScenes) return;
     selectedScene = sceneIndex;
     refreshTrackButtons();
     refreshSceneButtons();
@@ -808,9 +743,7 @@ void MainComponent::selectSceneForEditing (int sceneIndex)
 
 void MainComponent::chooseLoopForTrack (int trackIndex)
 {
-    if (trackIndex < 0 || trackIndex >= numTracks)
-        return;
-
+    if (trackIndex < 0 || trackIndex >= numTracks) return;
     if (projectFile == juce::File())
     {
         statusLabel.setText ("CREATE OR OPEN A PROJECT FIRST", juce::dontSendNotification);
@@ -818,59 +751,35 @@ void MainComponent::chooseLoopForTrack (int trackIndex)
     }
 
     fileChooser = std::make_unique<juce::FileChooser> (
-        "Choose audio for " + sceneNames[selectedScene] + " / " + trackNames[trackIndex],
-        juce::File(),
-        "*.wav;*.aif;*.aiff");
+        "Choose audio for " + sceneNames[selectedScene] + " / T" + juce::String (trackIndex + 1),
+        juce::File(), "*.wav;*.aif;*.aiff");
 
-    const auto chooserFlags = juce::FileBrowserComponent::openMode
-                            | juce::FileBrowserComponent::canSelectFiles;
+    const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+    fileChooser->launchAsync (flags, [this, trackIndex] (const juce::FileChooser& chooser)
+    {
+        const auto sourceFile = chooser.getResult();
+        if (! sourceFile.existsAsFile()) return;
 
-    fileChooser->launchAsync (
-        chooserFlags,
-        [this, trackIndex] (const juce::FileChooser& chooser)
-        {
-            const auto sourceFile = chooser.getResult();
+        std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (sourceFile));
+        if (reader == nullptr) return;
 
-            if (! sourceFile.existsAsFile())
-                return;
+        const auto imported = importAudioIntoProject (sourceFile);
+        if (! imported.existsAsFile()) return;
 
-            std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (sourceFile));
-
-            if (reader == nullptr)
-            {
-                statusLabel.setText ("COULD NOT LOAD AUDIO FILE", juce::dontSendNotification);
-                return;
-            }
-
-            const auto importedFile = importAudioIntoProject (sourceFile);
-
-            if (! importedFile.existsAsFile())
-            {
-                statusLabel.setText ("AUDIO IMPORT FAILED", juce::dontSendNotification);
-                return;
-            }
-
-            scenes[selectedScene][trackIndex] = importedFile;
-            refreshTrackButtons();
-            refreshSceneButtons();
-            saveProject();
-            updateStatus();
-        });
+        scenes[selectedScene][trackIndex] = imported;
+        refreshTrackButtons();
+        refreshSceneButtons();
+        saveProject();
+    });
 }
 
 void MainComponent::clearClipForTrack (int trackIndex)
 {
-    if (trackIndex < 0 || trackIndex >= numTracks)
-        return;
-
+    if (trackIndex < 0 || trackIndex >= numTracks) return;
     scenes[selectedScene][trackIndex] = {};
     refreshTrackButtons();
     refreshSceneButtons();
-
-    if (projectFile.existsAsFile())
-        saveProject();
-
-    updateStatus();
+    if (projectFile != juce::File()) saveProject();
 }
 
 void MainComponent::copySelectedScene()
@@ -883,133 +792,101 @@ void MainComponent::copySelectedScene()
 
 void MainComponent::pasteSceneToSelected()
 {
-    if (! hasCopiedSceneClipboard)
-        return;
-
+    if (! hasCopiedSceneClipboard) return;
     scenes[selectedScene] = copiedScene;
     sceneBars[selectedScene] = copiedSceneBars;
-
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
-
-    if (projectFile.existsAsFile())
-        saveProject();
-
-    updateStatus();
+    if (projectFile != juce::File()) saveProject();
 }
 
 void MainComponent::clearSelectedScene()
 {
-    for (auto& clip : scenes[selectedScene])
-        clip = {};
-
+    for (auto& clip : scenes[selectedScene]) clip = {};
     refreshTrackButtons();
     refreshSceneButtons();
-
-    if (projectFile.existsAsFile())
-        saveProject();
-
-    updateStatus();
+    if (projectFile != juce::File()) saveProject();
 }
 
 void MainComponent::setPerformanceMode (bool useSongMode)
 {
-    if (playing)
-        stopAll();
-
+    if (playing) stopAll();
     songMode = useSongMode;
     currentSongStep = -1;
     releaseHoldAtBoundary = false;
+    updateModeVisibility();
     refreshSongUi();
+    resized();
+    repaint();
     updateStatus();
+}
+
+void MainComponent::updateModeVisibility()
+{
+    const bool pattern = ! songMode;
+    for (auto* c : { static_cast<juce::Component*> (&sceneNameLabel), &sceneNameEditor, &sceneBarsLabel, &sceneBarsBox,
+                     &copySceneButton, &pasteSceneButton, &clearSceneButton, &addToSongButton })
+        c->setVisible (pattern);
+
+    for (int i = 0; i < numTracks; ++i)
+    {
+        trackLabels[i].setVisible (pattern);
+        loadButtons[i].setVisible (pattern);
+        clearButtons[i].setVisible (pattern);
+    }
+    for (auto& b : sceneButtons) b.setVisible (pattern);
+
+    for (auto* c : { static_cast<juce::Component*> (&removeSongStepButton), &holdSongStepButton, &continueSongButton,
+                     &clearSongButton, &prevSongPageButton, &songPageLabel, &nextSongPageButton })
+        c->setVisible (songMode);
+    for (auto& b : songStepButtons) b.setVisible (songMode);
 }
 
 void MainComponent::addSelectedSceneToSong()
 {
-    if (songStepCount >= maxSongSteps)
-        return;
-
-    songSteps[songStepCount].sceneIndex = selectedScene;
-    songSteps[songStepCount].hold = false;
-    selectedSongStep = songStepCount;
-    ++songStepCount;
+    if (songStepCount >= maxSongSteps) return;
+    songSteps[songStepCount] = { selectedScene, false };
+    selectedSongStep = songStepCount++;
     songPage = selectedSongStep / visibleSongSteps;
-
-    if (projectFile.existsAsFile())
-        saveProject();
-
+    if (projectFile != juce::File()) saveProject();
     refreshSongUi();
-    updateStatus();
 }
 
 void MainComponent::removeSelectedSongStep()
 {
-    if (selectedSongStep < 0 || selectedSongStep >= songStepCount)
-        return;
-
-    for (int i = selectedSongStep; i < songStepCount - 1; ++i)
-        songSteps[i] = songSteps[i + 1];
-
-    songSteps[songStepCount - 1] = {};
-    --songStepCount;
-
-    if (songStepCount == 0)
-        selectedSongStep = -1;
-    else
-        selectedSongStep = juce::jmin (selectedSongStep, songStepCount - 1);
-
-    const int maxPage = juce::jmax (0, (juce::jmax (songStepCount, 1) - 1) / visibleSongSteps);
-    songPage = juce::jmin (songPage, maxPage);
-
-    if (projectFile.existsAsFile())
-        saveProject();
-
+    if (selectedSongStep < 0 || selectedSongStep >= songStepCount) return;
+    for (int i = selectedSongStep; i < songStepCount - 1; ++i) songSteps[i] = songSteps[i + 1];
+    songSteps[--songStepCount] = {};
+    selectedSongStep = songStepCount > 0 ? juce::jmin (selectedSongStep, songStepCount - 1) : -1;
+    songPage = selectedSongStep >= 0 ? selectedSongStep / visibleSongSteps : 0;
+    if (projectFile != juce::File()) saveProject();
     refreshSongUi();
-    updateStatus();
 }
 
 void MainComponent::toggleSelectedSongStepHold()
 {
-    if (selectedSongStep < 0 || selectedSongStep >= songStepCount)
-        return;
-
+    if (selectedSongStep < 0 || selectedSongStep >= songStepCount) return;
     songSteps[selectedSongStep].hold = ! songSteps[selectedSongStep].hold;
-
-    if (projectFile.existsAsFile())
-        saveProject();
-
+    if (projectFile != juce::File()) saveProject();
     refreshSongUi();
-    updateStatus();
 }
 
 void MainComponent::clearSong()
 {
-    if (playing)
-        stopAll();
-
-    for (auto& step : songSteps)
-        step = {};
-
+    if (playing) stopAll();
+    for (auto& step : songSteps) step = {};
     songStepCount = 0;
     selectedSongStep = -1;
     currentSongStep = -1;
     songPage = 0;
-    releaseHoldAtBoundary = false;
-
-    if (projectFile.existsAsFile())
-        saveProject();
-
+    if (projectFile != juce::File()) saveProject();
     refreshSongUi();
-    updateStatus();
 }
 
 void MainComponent::continueSong()
 {
-    if (! playing || ! songMode || currentSongStep < 0 || currentSongStep >= songStepCount)
-        return;
-
-    if (songSteps[currentSongStep].hold)
+    if (playing && songMode && currentSongStep >= 0 && currentSongStep < songStepCount && songSteps[currentSongStep].hold)
     {
         releaseHoldAtBoundary = true;
         updateStatus();
@@ -1018,32 +895,26 @@ void MainComponent::continueSong()
 
 void MainComponent::selectSongStep (int absoluteIndex)
 {
-    if (absoluteIndex < 0 || absoluteIndex >= songStepCount)
-        return;
-
+    if (absoluteIndex < 0 || absoluteIndex >= songStepCount) return;
     selectedSongStep = absoluteIndex;
     const int sceneIndex = songSteps[absoluteIndex].sceneIndex;
-    if (sceneIndex >= 0 && sceneIndex < numScenes)
-        selectSceneForEditing (sceneIndex);
-
+    if (sceneIndex >= 0 && sceneIndex < numScenes) selectedScene = sceneIndex;
     refreshSongUi();
+    updateStatus();
 }
 
 void MainComponent::refreshSongUi()
 {
     patternModeButton.setColour (juce::TextButton::buttonColourId,
-                                 ! songMode ? juce::Colour::fromRGB (70, 70, 88)
-                                            : juce::Colour::fromRGB (38, 38, 44));
+                                 ! songMode ? juce::Colour::fromRGB (70, 70, 88) : juce::Colour::fromRGB (38, 38, 44));
     songModeButton.setColour (juce::TextButton::buttonColourId,
-                              songMode ? juce::Colour::fromRGB (70, 70, 88)
-                                       : juce::Colour::fromRGB (38, 38, 44));
+                              songMode ? juce::Colour::fromRGB (70, 70, 88) : juce::Colour::fromRGB (38, 38, 44));
 
-    const int maxPage = juce::jmax (0, (juce::jmax (songStepCount, 1) - 1) / visibleSongSteps);
-    songPage = juce::jlimit (0, maxPage, songPage);
-    songPageLabel.setText ("PAGE " + juce::String (songPage + 1), juce::dontSendNotification);
-
+    songPage = juce::jlimit (0, 1, songPage);
+    songPageLabel.setText ("STEPS " + juce::String (songPage * 64 + 1) + "-" + juce::String (songPage * 64 + 64),
+                           juce::dontSendNotification);
     prevSongPageButton.setEnabled (songPage > 0);
-    nextSongPageButton.setEnabled (songPage < maxPage);
+    nextSongPageButton.setEnabled (songPage < 1);
 
     for (int i = 0; i < visibleSongSteps; ++i)
     {
@@ -1053,25 +924,20 @@ void MainComponent::refreshSongUi()
         if (absoluteIndex < songStepCount)
         {
             const auto& step = songSteps[absoluteIndex];
-            juce::String text = juce::String (absoluteIndex + 1) + ": ";
-            if (step.sceneIndex >= 0 && step.sceneIndex < numScenes)
-                text += sceneNames[step.sceneIndex];
-            if (step.hold)
-                text += "\nHOLD";
-
+            juce::String text = juce::String (absoluteIndex + 1) + "\n";
+            if (step.sceneIndex >= 0 && step.sceneIndex < numScenes) text += sceneNames[step.sceneIndex];
+            if (step.hold) text += "\nHOLD";
             button.setButtonText (text);
             button.setEnabled (true);
             button.setColour (juce::TextButton::buttonColourId,
-                              absoluteIndex == selectedSongStep
-                                  ? juce::Colour::fromRGB (64, 64, 82)
-                                  : juce::Colour::fromRGB (32, 32, 38));
-
+                              absoluteIndex == selectedSongStep ? juce::Colour::fromRGB (64, 64, 82)
+                                                                : juce::Colour::fromRGB (32, 32, 38));
             if (absoluteIndex == currentSongStep && playing && songMode)
                 button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (90, 70, 40));
         }
         else
         {
-            button.setButtonText ("+");
+            button.setButtonText (juce::String (absoluteIndex + 1));
             button.setEnabled (false);
             button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (24, 24, 28));
         }
@@ -1081,26 +947,18 @@ void MainComponent::refreshSongUi()
     removeSongStepButton.setEnabled (hasSelection);
     holdSongStepButton.setEnabled (hasSelection);
     holdSongStepButton.setButtonText (hasSelection && songSteps[selectedSongStep].hold ? "HOLD: ON" : "HOLD: OFF");
-    continueSongButton.setEnabled (songMode && playing && currentSongStep >= 0
-                                   && currentSongStep < songStepCount
+    continueSongButton.setEnabled (songMode && playing && currentSongStep >= 0 && currentSongStep < songStepCount
                                    && songSteps[currentSongStep].hold);
 }
 
 void MainComponent::startSongStepNow (int songIndex)
 {
-    if (songIndex < 0 || songIndex >= songStepCount)
-    {
-        stopAll();
-        return;
-    }
-
+    if (songIndex < 0 || songIndex >= songStepCount) { stopAll(); return; }
     currentSongStep = songIndex;
     selectedSongStep = songIndex;
     releaseHoldAtBoundary = false;
     songPage = songIndex / visibleSongSteps;
-
-    const int sceneIndex = songSteps[songIndex].sceneIndex;
-    startSceneNow (sceneIndex);
+    startSceneNow (songSteps[songIndex].sceneIndex);
     currentSongStep = songIndex;
     refreshSongUi();
     updateStatus();
@@ -1108,27 +966,10 @@ void MainComponent::startSongStepNow (int songIndex)
 
 void MainComponent::advanceSongAtBoundary()
 {
-    if (! songMode || currentSongStep < 0)
-        return;
-
+    if (! songMode || currentSongStep < 0) return;
     const int nextStep = currentSongStep + 1;
-    if (nextStep >= songStepCount)
-    {
-        stopAll();
-        return;
-    }
-
+    if (nextStep >= songStepCount) { stopAll(); return; }
     startSongStepNow (nextStep);
-}
-
-void MainComponent::refreshTrackNameEditors()
-{
-    loadingProjectUi = true;
-
-    for (int i = 0; i < numTracks; ++i)
-        trackNameEditors[i].setText (trackNames[i], false);
-
-    loadingProjectUi = false;
 }
 
 void MainComponent::refreshTrackButtons()
@@ -1136,12 +977,7 @@ void MainComponent::refreshTrackButtons()
     for (int i = 0; i < numTracks; ++i)
     {
         const auto& file = scenes[selectedScene][i];
-
-        if (file.existsAsFile())
-            loadButtons[i].setButtonText (file.getFileNameWithoutExtension());
-        else
-            loadButtons[i].setButtonText ("LOAD WAV");
-
+        loadButtons[i].setButtonText (file.existsAsFile() ? shortName (file) : "LOAD");
         clearButtons[i].setEnabled (file.existsAsFile());
     }
 }
@@ -1151,57 +987,36 @@ void MainComponent::refreshSceneButtons()
     for (int i = 0; i < numScenes; ++i)
     {
         int clipCount = 0;
-        for (const auto& file : scenes[i])
-            if (file.existsAsFile())
-                ++clipCount;
+        for (const auto& file : scenes[i]) if (file.existsAsFile()) ++clipCount;
 
-        juce::String text = sceneNames[i];
-        text += "\n" + juce::String (sceneBars[i]) + " bar";
-
-        if (clipCount > 0)
-            text += " / " + juce::String (clipCount) + " clips";
-
+        juce::String text = sceneNames[i] + "\n" + juce::String (sceneBars[i]) + " bar";
+        if (clipCount > 0) text += " / " + juce::String (clipCount);
         sceneButtons[i].setButtonText (text);
         sceneButtons[i].setColour (juce::TextButton::buttonColourId,
-                                   i == selectedScene
-                                       ? juce::Colour::fromRGB (65, 65, 78)
-                                       : juce::Colour::fromRGB (34, 34, 38));
-
+                                   i == selectedScene ? juce::Colour::fromRGB (65, 65, 78)
+                                                      : juce::Colour::fromRGB (34, 34, 38));
         if (i == currentScene && playing)
-            sceneButtons[i].setColour (juce::TextButton::buttonColourId,
-                                       juce::Colour::fromRGB (90, 70, 40));
-
+            sceneButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (90, 70, 40));
         if (i == queuedScene)
-            sceneButtons[i].setColour (juce::TextButton::buttonColourId,
-                                       juce::Colour::fromRGB (55, 75, 95));
+            sceneButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (55, 75, 95));
     }
 }
 
 void MainComponent::refreshSceneEditor()
 {
     loadingProjectUi = true;
-
     sceneNameEditor.setText (sceneNames[selectedScene], false);
     sceneBarsBox.setSelectedId (barsToItemId (sceneBars[selectedScene]), juce::dontSendNotification);
-
     loadingProjectUi = false;
 }
 
 void MainComponent::triggerScene (int sceneIndex)
 {
-    if (sceneIndex < 0 || sceneIndex >= numScenes)
-        return;
-
+    if (sceneIndex < 0 || sceneIndex >= numScenes) return;
     selectedScene = sceneIndex;
     refreshTrackButtons();
     refreshSceneEditor();
-
-    if (! playing)
-    {
-        startSceneNow (sceneIndex);
-        return;
-    }
-
+    if (! playing) { startSceneNow (sceneIndex); return; }
     queuedScene = sceneIndex;
     refreshSceneButtons();
     updateStatus();
@@ -1210,7 +1025,6 @@ void MainComponent::triggerScene (int sceneIndex)
 bool MainComponent::loadSceneIntoTransports (int sceneIndex)
 {
     bool anyLoaded = false;
-
     for (int i = 0; i < numTracks; ++i)
     {
         auto& track = tracks[i];
@@ -1220,23 +1034,19 @@ bool MainComponent::loadSceneIntoTransports (int sceneIndex)
         track.loadedFile = {};
 
         const auto& file = scenes[sceneIndex][i];
-        if (! file.existsAsFile())
-            continue;
+        if (! file.existsAsFile()) continue;
 
         std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
-        if (reader == nullptr)
-            continue;
+        if (reader == nullptr) continue;
 
         const double sourceSampleRate = reader->sampleRate;
         auto newSource = std::make_unique<juce::AudioFormatReaderSource> (reader.release(), true);
         newSource->setLooping (true);
-
         track.transport.setSource (newSource.get(), 0, nullptr, sourceSampleRate);
         track.readerSource = std::move (newSource);
         track.loadedFile = file;
         anyLoaded = true;
     }
-
     return anyLoaded;
 }
 
@@ -1246,7 +1056,6 @@ void MainComponent::startSceneNow (int sceneIndex)
     selectedScene = sceneIndex;
     queuedScene = -1;
     samplesSinceSceneStart = 0.0;
-
     loadSceneIntoTransports (sceneIndex);
 
     for (auto& track : tracks)
@@ -1262,22 +1071,16 @@ void MainComponent::startSceneNow (int sceneIndex)
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
+    refreshSongUi();
     updateStatus();
 }
 
 void MainComponent::startPlayback()
 {
     if (songMode && songStepCount > 0)
-    {
-        const int startStep = selectedSongStep >= 0 && selectedSongStep < songStepCount
-            ? selectedSongStep
-            : 0;
-        startSongStepNow (startStep);
-    }
+        startSongStepNow (selectedSongStep >= 0 && selectedSongStep < songStepCount ? selectedSongStep : 0);
     else
-    {
         startSceneNow (selectedScene);
-    }
 }
 
 void MainComponent::stopAll()
@@ -1287,13 +1090,11 @@ void MainComponent::stopAll()
         track.transport.stop();
         track.transport.setPosition (0.0);
     }
-
     playing = false;
     queuedScene = -1;
     currentSongStep = -1;
     releaseHoldAtBoundary = false;
     samplesSinceSceneStart = 0.0;
-
     refreshSceneButtons();
     refreshSongUi();
     updateStatus();
@@ -1301,56 +1102,29 @@ void MainComponent::stopAll()
 
 void MainComponent::updateProjectLabel()
 {
-    if (projectFile == juce::File())
-    {
-        projectLabel.setText ("NO PROJECT", juce::dontSendNotification);
-        return;
-    }
-
-    projectLabel.setText (
-        "PROJECT: " + projectFile.getFileNameWithoutExtension() + "   |   " + projectFolder.getFullPathName(),
-        juce::dontSendNotification);
+    projectLabel.setText (projectFile == juce::File() ? "NO PROJECT" : projectFile.getFileName(), juce::dontSendNotification);
 }
 
 void MainComponent::updateStatus()
 {
     juce::String text = songMode ? "SONG MODE" : "PATTERN MODE";
-    text += playing
-        ? "  |  PLAYING  |  " + sceneNames[currentScene] + "  |  " + juce::String (sceneBars[currentScene]) + " bars"
-        : "  |  STOPPED";
-
-    if (! songMode && queuedScene >= 0)
-        text += "  |  NEXT: " + sceneNames[queuedScene];
-
-    if (songMode && playing && currentSongStep >= 0 && currentSongStep < songStepCount)
-    {
-        text += "  |  SONG STEP " + juce::String (currentSongStep + 1) + "/" + juce::String (songStepCount);
-        if (songSteps[currentSongStep].hold)
-            text += releaseHoldAtBoundary ? "  |  CONTINUE ARMED" : "  |  HOLD";
-    }
-
-    if (hasCopiedSceneClipboard)
-        text += "  |  CLIPBOARD READY";
-
+    text += playing ? "  |  PLAYING  |  " + sceneNames[currentScene] : "  |  STOPPED";
+    if (! songMode && queuedScene >= 0) text += "  |  NEXT: " + sceneNames[queuedScene];
+    if (songMode && playing && currentSongStep >= 0) text += "  |  STEP " + juce::String (currentSongStep + 1);
+    if (songMode && releaseHoldAtBoundary) text += "  |  CONTINUE ARMED";
+    if (hasCopiedSceneClipboard) text += "  |  COPY READY";
     statusLabel.setText (text, juce::dontSendNotification);
 
-    selectedSceneLabel.setText (
-        "EDIT: " + sceneNames[selectedScene] + "   |   Scene " + juce::String (selectedScene + 1),
-        juce::dontSendNotification);
+    selectedSceneLabel.setText ("EDIT: " + sceneNames[selectedScene] + "   |   Scene " + juce::String (selectedScene + 1),
+                                juce::dontSendNotification);
 }
 
 double MainComponent::getSamplesPerBar() const
 {
-    const double bpm = bpmSlider.getValue();
-    const double secondsPerBeat = 60.0 / bpm;
-    const double secondsPerBar = secondsPerBeat * 4.0;
-    return secondsPerBar * currentSampleRate;
+    return (60.0 / bpmSlider.getValue()) * 4.0 * currentSampleRate;
 }
 
 double MainComponent::getSamplesPerScene (int sceneIndex) const
 {
-    if (sceneIndex < 0 || sceneIndex >= numScenes)
-        return getSamplesPerBar() * 4.0;
-
-    return getSamplesPerBar() * static_cast<double> (sceneBars[sceneIndex]);
+    return getSamplesPerBar() * static_cast<double> (sceneIndex >= 0 && sceneIndex < numScenes ? sceneBars[sceneIndex] : 4);
 }
