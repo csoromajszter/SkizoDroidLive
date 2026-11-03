@@ -456,7 +456,7 @@ bool MainComponent::packWorkingFolderToProject (const juce::File& targetFile)
 
     for (const auto& file : files)
     {
-        const auto relativePath = file.getRelativePathFrom (workingFolder).replaceCharacter ('\', '/');
+        const auto relativePath = file.getRelativePathFrom (workingFolder).replaceCharacter ('\\', '/');
         builder.addFile (file, 0, relativePath);
     }
 
