@@ -81,6 +81,7 @@ MainComponent::MainComponent()
 
         sceneNames[selectedScene] = sceneNameEditor.getText().trim();
         refreshSceneButtons();
+        refreshSongUi();
 
         if (projectFile.existsAsFile())
             saveProject();
@@ -137,6 +138,54 @@ MainComponent::MainComponent()
     pasteSceneButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (44, 52, 68));
     clearSceneButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (68, 44, 44));
 
+    patternModeButton.onClick = [this] { setPerformanceMode (false); };
+    songModeButton.onClick = [this] { setPerformanceMode (true); };
+    addToSongButton.onClick = [this] { addSelectedSceneToSong(); };
+    removeSongStepButton.onClick = [this] { removeSelectedSongStep(); };
+    holdSongStepButton.onClick = [this] { toggleSelectedSongStepHold(); };
+    continueSongButton.onClick = [this] { continueSong(); };
+    clearSongButton.onClick = [this] { clearSong(); };
+    prevSongPageButton.onClick = [this]
+    {
+        if (songPage > 0)
+        {
+            --songPage;
+            refreshSongUi();
+        }
+    };
+    nextSongPageButton.onClick = [this]
+    {
+        const int maxPage = juce::jmax (0, (juce::jmax (songStepCount, 1) - 1) / visibleSongSteps);
+        if (songPage < maxPage)
+        {
+            ++songPage;
+            refreshSongUi();
+        }
+    };
+
+    for (auto* button : { &patternModeButton, &songModeButton, &addToSongButton,
+                           &removeSongStepButton, &holdSongStepButton, &continueSongButton,
+                           &clearSongButton, &prevSongPageButton, &nextSongPageButton })
+        addAndMakeVisible (*button);
+
+    patternModeButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (70, 70, 88));
+    songModeButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (38, 38, 44));
+    holdSongStepButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (86, 64, 34));
+    continueSongButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (42, 72, 48));
+    clearSongButton.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (68, 44, 44));
+
+    songPageLabel.setJustificationType (juce::Justification::centred);
+    addAndMakeVisible (songPageLabel);
+
+    for (int i = 0; i < visibleSongSteps; ++i)
+    {
+        songStepButtons[i].onClick = [this, i]
+        {
+            selectSongStep (songPage * visibleSongSteps + i);
+        };
+        addAndMakeVisible (songStepButtons[i]);
+    }
+
     for (int i = 0; i < numTracks; ++i)
     {
         trackNameEditors[i].setText (trackNames[i], false);
@@ -171,7 +220,7 @@ MainComponent::MainComponent()
     {
         sceneButtons[i].onClick = [this, i]
         {
-            if (playing)
+            if (playing && ! songMode)
                 triggerScene (i);
             else
                 selectSceneForEditing (i);
@@ -180,13 +229,14 @@ MainComponent::MainComponent()
         addAndMakeVisible (sceneButtons[i]);
     }
 
-    setSize (1500, 900);
+    setSize (1500, 980);
     setAudioChannels (0, 2);
 
     refreshTrackNameEditors();
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
+    refreshSongUi();
     updateProjectLabel();
     updateStatus();
 }
@@ -244,7 +294,21 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
     {
         samplesSinceSceneStart = std::fmod (samplesSinceSceneStart, samplesPerScene);
 
-        if (queuedScene >= 0)
+        if (songMode && currentSongStep >= 0)
+        {
+            const bool stepIsHold = songSteps[currentSongStep].hold;
+            if (! stepIsHold || releaseHoldAtBoundary)
+            {
+                releaseHoldAtBoundary = false;
+                juce::MessageManager::callAsync (
+                    [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+                    {
+                        if (safeThis != nullptr)
+                            safeThis->advanceSongAtBoundary();
+                    });
+            }
+        }
+        else if (queuedScene >= 0)
         {
             const int sceneToLaunch = queuedScene;
             queuedScene = -1;
@@ -310,7 +374,31 @@ void MainComponent::resized()
 
     area.removeFromTop (6);
 
-    auto trackArea = area.removeFromTop (164);
+    auto songControlRow = area.removeFromTop (38);
+    patternModeButton.setBounds (songControlRow.removeFromLeft (120).reduced (3));
+    songModeButton.setBounds (songControlRow.removeFromLeft (110).reduced (3));
+    addToSongButton.setBounds (songControlRow.removeFromLeft (120).reduced (3));
+    removeSongStepButton.setBounds (songControlRow.removeFromLeft (95).reduced (3));
+    holdSongStepButton.setBounds (songControlRow.removeFromLeft (105).reduced (3));
+    continueSongButton.setBounds (songControlRow.removeFromLeft (100).reduced (3));
+    clearSongButton.setBounds (songControlRow.removeFromLeft (105).reduced (3));
+    prevSongPageButton.setBounds (songControlRow.removeFromLeft (36).reduced (3));
+    songPageLabel.setBounds (songControlRow.removeFromLeft (90));
+    nextSongPageButton.setBounds (songControlRow.removeFromLeft (36).reduced (3));
+
+    auto songStepRow = area.removeFromTop (54);
+    const int songCellW = songStepRow.getWidth() / visibleSongSteps;
+    for (int i = 0; i < visibleSongSteps; ++i)
+    {
+        songStepButtons[i].setBounds (songStepRow.getX() + i * songCellW + 2,
+                                      songStepRow.getY() + 2,
+                                      songCellW - 4,
+                                      songStepRow.getHeight() - 4);
+    }
+
+    area.removeFromTop (4);
+
+    auto trackArea = area.removeFromTop (154);
     const int trackColumns = 8;
     const int trackRows = 2;
     const int trackWidth = trackArea.getWidth() / trackColumns;
@@ -363,12 +451,20 @@ void MainComponent::resetProjectData()
     selectedScene = 0;
     currentScene = 0;
     queuedScene = -1;
+    songStepCount = 0;
+    selectedSongStep = -1;
+    currentSongStep = -1;
+    songPage = 0;
+    releaseHoldAtBoundary = false;
+    for (auto& step : songSteps)
+        step = {};
     bpmSlider.setValue (120.0, juce::dontSendNotification);
 
     refreshTrackNameEditors();
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
+    refreshSongUi();
 }
 
 void MainComponent::newProject()
@@ -548,6 +644,16 @@ bool MainComponent::saveProjectToFile (const juce::File& file)
         }
     }
 
+    auto* songXml = root.createNewChildElement ("Song");
+    songXml->setAttribute ("stepCount", songStepCount);
+    for (int i = 0; i < songStepCount; ++i)
+    {
+        auto* stepXml = songXml->createNewChildElement ("Step");
+        stepXml->setAttribute ("index", i);
+        stepXml->setAttribute ("scene", songSteps[i].sceneIndex);
+        stepXml->setAttribute ("hold", songSteps[i].hold);
+    }
+
     file.getParentDirectory().createDirectory();
     return file.replaceWithText (root.toString());
 }
@@ -610,16 +716,39 @@ bool MainComponent::loadProjectFromFile (const juce::File& file)
         }
     }
 
+    songStepCount = 0;
+    for (auto& step : songSteps)
+        step = {};
+
+    if (auto* songXml = root->getChildByName ("Song"))
+    {
+        forEachXmlChildElementWithTagName (*songXml, stepXml, "Step")
+        {
+            const int sceneIndex = stepXml->getIntAttribute ("scene", -1);
+            if (sceneIndex < 0 || sceneIndex >= numScenes || songStepCount >= maxSongSteps)
+                continue;
+
+            songSteps[songStepCount].sceneIndex = sceneIndex;
+            songSteps[songStepCount].hold = stepXml->getBoolAttribute ("hold", false);
+            ++songStepCount;
+        }
+    }
+
     loadingProjectUi = false;
 
     selectedScene = 0;
     currentScene = 0;
     queuedScene = -1;
+    selectedSongStep = songStepCount > 0 ? 0 : -1;
+    currentSongStep = -1;
+    songPage = 0;
+    releaseHoldAtBoundary = false;
 
     refreshTrackNameEditors();
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
+    refreshSongUi();
     updateProjectLabel();
     updateStatus();
 
@@ -784,6 +913,214 @@ void MainComponent::clearSelectedScene()
     updateStatus();
 }
 
+void MainComponent::setPerformanceMode (bool useSongMode)
+{
+    if (playing)
+        stopAll();
+
+    songMode = useSongMode;
+    currentSongStep = -1;
+    releaseHoldAtBoundary = false;
+    refreshSongUi();
+    updateStatus();
+}
+
+void MainComponent::addSelectedSceneToSong()
+{
+    if (songStepCount >= maxSongSteps)
+        return;
+
+    songSteps[songStepCount].sceneIndex = selectedScene;
+    songSteps[songStepCount].hold = false;
+    selectedSongStep = songStepCount;
+    ++songStepCount;
+    songPage = selectedSongStep / visibleSongSteps;
+
+    if (projectFile.existsAsFile())
+        saveProject();
+
+    refreshSongUi();
+    updateStatus();
+}
+
+void MainComponent::removeSelectedSongStep()
+{
+    if (selectedSongStep < 0 || selectedSongStep >= songStepCount)
+        return;
+
+    for (int i = selectedSongStep; i < songStepCount - 1; ++i)
+        songSteps[i] = songSteps[i + 1];
+
+    songSteps[songStepCount - 1] = {};
+    --songStepCount;
+
+    if (songStepCount == 0)
+        selectedSongStep = -1;
+    else
+        selectedSongStep = juce::jmin (selectedSongStep, songStepCount - 1);
+
+    const int maxPage = juce::jmax (0, (juce::jmax (songStepCount, 1) - 1) / visibleSongSteps);
+    songPage = juce::jmin (songPage, maxPage);
+
+    if (projectFile.existsAsFile())
+        saveProject();
+
+    refreshSongUi();
+    updateStatus();
+}
+
+void MainComponent::toggleSelectedSongStepHold()
+{
+    if (selectedSongStep < 0 || selectedSongStep >= songStepCount)
+        return;
+
+    songSteps[selectedSongStep].hold = ! songSteps[selectedSongStep].hold;
+
+    if (projectFile.existsAsFile())
+        saveProject();
+
+    refreshSongUi();
+    updateStatus();
+}
+
+void MainComponent::clearSong()
+{
+    if (playing)
+        stopAll();
+
+    for (auto& step : songSteps)
+        step = {};
+
+    songStepCount = 0;
+    selectedSongStep = -1;
+    currentSongStep = -1;
+    songPage = 0;
+    releaseHoldAtBoundary = false;
+
+    if (projectFile.existsAsFile())
+        saveProject();
+
+    refreshSongUi();
+    updateStatus();
+}
+
+void MainComponent::continueSong()
+{
+    if (! playing || ! songMode || currentSongStep < 0 || currentSongStep >= songStepCount)
+        return;
+
+    if (songSteps[currentSongStep].hold)
+    {
+        releaseHoldAtBoundary = true;
+        updateStatus();
+    }
+}
+
+void MainComponent::selectSongStep (int absoluteIndex)
+{
+    if (absoluteIndex < 0 || absoluteIndex >= songStepCount)
+        return;
+
+    selectedSongStep = absoluteIndex;
+    const int sceneIndex = songSteps[absoluteIndex].sceneIndex;
+    if (sceneIndex >= 0 && sceneIndex < numScenes)
+        selectSceneForEditing (sceneIndex);
+
+    refreshSongUi();
+}
+
+void MainComponent::refreshSongUi()
+{
+    patternModeButton.setColour (juce::TextButton::buttonColourId,
+                                 ! songMode ? juce::Colour::fromRGB (70, 70, 88)
+                                            : juce::Colour::fromRGB (38, 38, 44));
+    songModeButton.setColour (juce::TextButton::buttonColourId,
+                              songMode ? juce::Colour::fromRGB (70, 70, 88)
+                                       : juce::Colour::fromRGB (38, 38, 44));
+
+    const int maxPage = juce::jmax (0, (juce::jmax (songStepCount, 1) - 1) / visibleSongSteps);
+    songPage = juce::jlimit (0, maxPage, songPage);
+    songPageLabel.setText ("PAGE " + juce::String (songPage + 1), juce::dontSendNotification);
+
+    prevSongPageButton.setEnabled (songPage > 0);
+    nextSongPageButton.setEnabled (songPage < maxPage);
+
+    for (int i = 0; i < visibleSongSteps; ++i)
+    {
+        const int absoluteIndex = songPage * visibleSongSteps + i;
+        auto& button = songStepButtons[i];
+
+        if (absoluteIndex < songStepCount)
+        {
+            const auto& step = songSteps[absoluteIndex];
+            juce::String text = juce::String (absoluteIndex + 1) + ": ";
+            if (step.sceneIndex >= 0 && step.sceneIndex < numScenes)
+                text += sceneNames[step.sceneIndex];
+            if (step.hold)
+                text += "\nHOLD";
+
+            button.setButtonText (text);
+            button.setEnabled (true);
+            button.setColour (juce::TextButton::buttonColourId,
+                              absoluteIndex == selectedSongStep
+                                  ? juce::Colour::fromRGB (64, 64, 82)
+                                  : juce::Colour::fromRGB (32, 32, 38));
+
+            if (absoluteIndex == currentSongStep && playing && songMode)
+                button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (90, 70, 40));
+        }
+        else
+        {
+            button.setButtonText ("+");
+            button.setEnabled (false);
+            button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (24, 24, 28));
+        }
+    }
+
+    const bool hasSelection = selectedSongStep >= 0 && selectedSongStep < songStepCount;
+    removeSongStepButton.setEnabled (hasSelection);
+    holdSongStepButton.setEnabled (hasSelection);
+    holdSongStepButton.setButtonText (hasSelection && songSteps[selectedSongStep].hold ? "HOLD: ON" : "HOLD: OFF");
+    continueSongButton.setEnabled (songMode && playing && currentSongStep >= 0
+                                   && currentSongStep < songStepCount
+                                   && songSteps[currentSongStep].hold);
+}
+
+void MainComponent::startSongStepNow (int songIndex)
+{
+    if (songIndex < 0 || songIndex >= songStepCount)
+    {
+        stopAll();
+        return;
+    }
+
+    currentSongStep = songIndex;
+    selectedSongStep = songIndex;
+    releaseHoldAtBoundary = false;
+    songPage = songIndex / visibleSongSteps;
+
+    const int sceneIndex = songSteps[songIndex].sceneIndex;
+    startSceneNow (sceneIndex);
+    currentSongStep = songIndex;
+    refreshSongUi();
+    updateStatus();
+}
+
+void MainComponent::advanceSongAtBoundary()
+{
+    if (! songMode || currentSongStep < 0)
+        return;
+
+    const int nextStep = currentSongStep + 1;
+    if (nextStep >= songStepCount)
+    {
+        stopAll();
+        return;
+    }
+
+    startSongStepNow (nextStep);
+}
+
 void MainComponent::refreshTrackNameEditors()
 {
     loadingProjectUi = true;
@@ -930,7 +1267,17 @@ void MainComponent::startSceneNow (int sceneIndex)
 
 void MainComponent::startPlayback()
 {
-    startSceneNow (selectedScene);
+    if (songMode && songStepCount > 0)
+    {
+        const int startStep = selectedSongStep >= 0 && selectedSongStep < songStepCount
+            ? selectedSongStep
+            : 0;
+        startSongStepNow (startStep);
+    }
+    else
+    {
+        startSceneNow (selectedScene);
+    }
 }
 
 void MainComponent::stopAll()
@@ -943,9 +1290,12 @@ void MainComponent::stopAll()
 
     playing = false;
     queuedScene = -1;
+    currentSongStep = -1;
+    releaseHoldAtBoundary = false;
     samplesSinceSceneStart = 0.0;
 
     refreshSceneButtons();
+    refreshSongUi();
     updateStatus();
 }
 
@@ -964,12 +1314,20 @@ void MainComponent::updateProjectLabel()
 
 void MainComponent::updateStatus()
 {
-    juce::String text = playing
-        ? "PLAYING  |  " + sceneNames[currentScene] + "  |  " + juce::String (sceneBars[currentScene]) + " bars"
-        : "STOPPED";
+    juce::String text = songMode ? "SONG MODE" : "PATTERN MODE";
+    text += playing
+        ? "  |  PLAYING  |  " + sceneNames[currentScene] + "  |  " + juce::String (sceneBars[currentScene]) + " bars"
+        : "  |  STOPPED";
 
-    if (queuedScene >= 0)
+    if (! songMode && queuedScene >= 0)
         text += "  |  NEXT: " + sceneNames[queuedScene];
+
+    if (songMode && playing && currentSongStep >= 0 && currentSongStep < songStepCount)
+    {
+        text += "  |  SONG STEP " + juce::String (currentSongStep + 1) + "/" + juce::String (songStepCount);
+        if (songSteps[currentSongStep].hold)
+            text += releaseHoldAtBoundary ? "  |  CONTINUE ARMED" : "  |  HOLD";
+    }
 
     if (hasCopiedSceneClipboard)
         text += "  |  CLIPBOARD READY";

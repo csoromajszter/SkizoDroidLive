@@ -24,6 +24,8 @@ private:
     static constexpr int numScenes = 64;
     static constexpr int sceneColumns = 8;
     static constexpr int sceneRows = 8;
+    static constexpr int maxSongSteps = 128;
+    static constexpr int visibleSongSteps = 16;
 
     struct LoopTrack
     {
@@ -34,11 +36,18 @@ private:
 
     using SceneClipMap = std::array<juce::File, numTracks>;
 
+    struct SongStep
+    {
+        int sceneIndex = -1;
+        bool hold = false;
+    };
+
     std::array<LoopTrack, numTracks> tracks;
     std::array<SceneClipMap, numScenes> scenes;
     std::array<juce::String, numScenes> sceneNames;
     std::array<int, numScenes> sceneBars;
     std::array<juce::String, numTracks> trackNames;
+    std::array<SongStep, maxSongSteps> songSteps;
 
     juce::AudioFormatManager formatManager;
     juce::MixerAudioSource mixer;
@@ -67,10 +76,22 @@ private:
     juce::TextButton pasteSceneButton { "PASTE SCENE" };
     juce::TextButton clearSceneButton { "CLEAR SCENE" };
 
+    juce::TextButton patternModeButton { "PATTERN MODE" };
+    juce::TextButton songModeButton { "SONG MODE" };
+    juce::TextButton addToSongButton { "ADD TO SONG" };
+    juce::TextButton removeSongStepButton { "REMOVE" };
+    juce::TextButton holdSongStepButton { "HOLD: OFF" };
+    juce::TextButton continueSongButton { "CONTINUE" };
+    juce::TextButton clearSongButton { "CLEAR SONG" };
+    juce::TextButton prevSongPageButton { "<" };
+    juce::TextButton nextSongPageButton { ">" };
+    juce::Label songPageLabel;
+
     std::array<juce::TextEditor, numTracks> trackNameEditors;
     std::array<juce::TextButton, numTracks> loadButtons;
     std::array<juce::TextButton, numTracks> clearButtons;
     std::array<juce::TextButton, numScenes> sceneButtons;
+    std::array<juce::TextButton, visibleSongSteps> songStepButtons;
 
     std::unique_ptr<juce::Drawable> logoDrawable;
     juce::Rectangle<int> headerLogoBounds;
@@ -84,6 +105,13 @@ private:
     SceneClipMap copiedScene;
     int copiedSceneBars = 4;
     bool hasCopiedSceneClipboard = false;
+
+    bool songMode = false;
+    bool releaseHoldAtBoundary = false;
+    int songStepCount = 0;
+    int selectedSongStep = -1;
+    int currentSongStep = -1;
+    int songPage = 0;
 
     bool playing = false;
     bool loadingProjectUi = false;
@@ -116,6 +144,17 @@ private:
     void copySelectedScene();
     void pasteSceneToSelected();
     void clearSelectedScene();
+
+    void setPerformanceMode (bool useSongMode);
+    void addSelectedSceneToSong();
+    void removeSelectedSongStep();
+    void toggleSelectedSongStepHold();
+    void clearSong();
+    void continueSong();
+    void selectSongStep (int absoluteIndex);
+    void refreshSongUi();
+    void startSongStepNow (int songIndex);
+    void advanceSongAtBoundary();
 
     void refreshTrackButtons();
     void refreshSceneButtons();
