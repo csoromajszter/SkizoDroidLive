@@ -78,6 +78,8 @@ private:
     juce::TextButton clearSceneButton { "CLEAR SCENE" };
     juce::TextButton addToSongButton { "ADD TO SONG" };
 
+    juce::TextButton assignSceneButton { "ASSIGN SCENE" };
+    juce::TextButton cancelSceneAssignButton { "CANCEL" };
     juce::TextButton removeSongStepButton { "REMOVE" };
     juce::TextButton holdSongStepButton { "HOLD: OFF" };
     juce::TextButton continueSongButton { "CONTINUE" };
@@ -96,6 +98,10 @@ private:
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 
+    juce::ApplicationProperties appProperties;
+    juce::File lastUsedDirectory;
+    bool saveInProgress = false;
+
     juce::File projectFile;
     juce::File workingFolder;
     juce::File audioFolder;
@@ -105,6 +111,7 @@ private:
     bool hasCopiedSceneClipboard = false;
 
     bool songMode = false;
+    bool choosingSongScene = false;
     bool releaseHoldAtBoundary = false;
     int songStepCount = 0;
     int selectedSongStep = -1;
@@ -123,6 +130,9 @@ private:
 
     void initialiseDefaults();
     void createFreshWorkingFolder();
+    void initialiseAppSettings();
+    void rememberDirectory (const juce::File& fileOrFolder);
+    juce::File getLastUsedDirectory() const;
     bool writeProjectXml();
     bool readProjectXml();
     bool packWorkingFolderToProject (const juce::File& targetFile);
@@ -131,6 +141,9 @@ private:
     void newProject();
     void openProject();
     void saveProject();
+    void saveProjectWithFeedback();
+    bool performProjectSave (const juce::File& targetFile);
+    void setSaveButtonBusy (bool busy, bool failed = false);
     void saveProjectAs();
     void resetProjectData();
     void updateProjectLabel();
@@ -149,6 +162,9 @@ private:
     void setPerformanceMode (bool useSongMode);
     void updateModeVisibility();
     void addSelectedSceneToSong();
+    void beginAssignSceneToSongStep();
+    void cancelAssignSceneToSongStep();
+    void assignSceneToSelectedSongStep (int sceneIndex);
     void removeSelectedSongStep();
     void toggleSelectedSongStepHold();
     void clearSong();
