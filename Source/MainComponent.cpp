@@ -531,81 +531,21 @@ void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRat
 
 void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
 {
-    const int numSamples = bufferToFill.numSamples;
-    const int fadeLength = juce::jmax (1, static_cast<int> (currentSampleRate * 0.008));
-
-    int phase = transitionFadeState.load (std::memory_order_acquire);
-    if (phase == 2)
-    {
-        // The source hand-off is performed on the message thread.
-        // Never let the audio thread render a transport being reconfigured.
-        bufferToFill.clearActiveBufferRegion();
-        if (startFadeIn.exchange (false))
-        {
-            transitionFadeState.store (3, std::memory_order_release);
-            fadeSamplePosition = 0;
-        }
-        return;
-    }
-
     if (! playing)
     {
         bufferToFill.clearActiveBufferRegion();
         return;
     }
 
+    // V0.9.1: restore continuous playback. In V0.9 the fade state machine
+    // muted the output until a UI-thread transition was completed. That could
+    // produce an entire scene's worth of silence, so it is disabled here.
     mixer.getNextAudioBlock (bufferToFill);
 
-    if (phase == 1 || phase == 3)
-    {
-        // Smooth gain ramps suppress discontinuities at STOP->PLAY transitions.
-        // This is a fade-through-silence; it is NOT an overlapping crossfade.
-        const int channels = bufferToFill.buffer->getNumChannels();
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            const float fraction = juce::jlimit (0.0f, 1.0f,
-                static_cast<float> (fadeSamplePosition) / static_cast<float> (fadeLength));
-            const float gain = phase == 1 ? (1.0f - fraction) : fraction;
-            for (int ch = 0; ch < channels; ++ch)
-                bufferToFill.buffer->getWritePointer (ch, bufferToFill.startSample)[sample] *= gain;
-
-            ++fadeSamplePosition;
-            if (fadeSamplePosition >= fadeLength)
-            {
-                if (phase == 1)
-                {
-                    // Silence the remainder of the block and arrange the
-                    // actual transport change without blocking the audio thread.
-                    for (int ch = 0; ch < channels; ++ch)
-                        juce::FloatVectorOperations::clear (
-                            bufferToFill.buffer->getWritePointer (ch, bufferToFill.startSample) + sample + 1,
-                            numSamples - sample - 1);
-                    transitionFadeState.store (2, std::memory_order_release);
-                    if (! transitionCallbackScheduled)
-                    {
-                        transitionCallbackScheduled = true;
-                        juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this)]
-                        {
-                            if (safeThis != nullptr)
-                                safeThis->completeQueuedTransition();
-                        });
-                    }
-                }
-                else
-                {
-                    transitionFadeState.store (0, std::memory_order_release);
-                    transitionCallbackScheduled = false;
-                }
-                break;
-            }
-        }
-        return;
-    }
-
     if (previewMode)
-        return; // No Song Mode advancement while previewing.
+        return; // Preview never advances the Song timeline.
 
-    samplesSinceSceneStart += numSamples;
+    samplesSinceSceneStart += bufferToFill.numSamples;
     const auto samplesPerScene = getSamplesPerScene (currentScene);
     if (samplesPerScene <= 0.0 || samplesSinceSceneStart < samplesPerScene)
         return;
@@ -623,18 +563,25 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& buffe
         shouldChange = queuedScene >= 0;
     }
 
-    if (shouldChange)
+    if (! shouldChange || transitionCallbackScheduled.exchange (true))
+        return;
+
+    // Never intentionally wait in silence. The existing transport hand-off
+    // remains on the message thread until a two-bank engine is implemented.
+    juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this)]
     {
-        fadeSamplePosition = 0;
-        transitionFadeState.store (1, std::memory_order_release);
-    }
+        if (safeThis != nullptr)
+            safeThis->completeQueuedTransition();
+    });
 }
 
 void MainComponent::completeQueuedTransition()
 {
-    // The audio callback is outputting silence until this finishes.
-    if (transitionFadeState.load (std::memory_order_acquire) != 2 || ! playing)
+    if (! playing)
+    {
+        transitionCallbackScheduled.store (false);
         return;
+    }
 
     if (songMode && currentSongStep >= 0)
     {
@@ -648,8 +595,7 @@ void MainComponent::completeQueuedTransition()
         startSceneNow (next);
     }
 
-    if (playing)
-        startFadeIn.store (true, std::memory_order_release);
+    transitionCallbackScheduled.store (false);
 }
 
 void MainComponent::releaseResources()
@@ -1565,8 +1511,7 @@ void MainComponent::stopAll()
     queuedSongStep = -1;
     previewMode = false;
     previewSceneIndex = -1;
-    transitionFadeState.store (0);
-    startFadeIn.store (false);
+    transitionCallbackScheduled.store (false);
     currentSongStep = -1;
     releaseHoldAtBoundary = false;
     samplesSinceSceneStart = 0.0;

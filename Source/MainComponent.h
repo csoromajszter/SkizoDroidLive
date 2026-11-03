@@ -133,12 +133,8 @@ private:
 
     double currentSampleRate = 44100.0;
     double samplesSinceSceneStart = 0.0;
-    // 0 = regular, 1 = fading old scene, 2 = silent while the
-    // message thread switches transports, 3 = fading in new scene.
-    std::atomic<int> transitionFadeState { 0 };
-    std::atomic<bool> startFadeIn { false };
-    int fadeSamplePosition = 0; // Only accessed on audio thread.
-    bool transitionCallbackScheduled = false; // Only accessed on audio thread.
+    // Prevent duplicate queued boundary hand-offs while the UI thread processes a scene change.
+    std::atomic<bool> transitionCallbackScheduled { false };
 
 
     void initialiseDefaults();
