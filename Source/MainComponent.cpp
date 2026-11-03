@@ -825,9 +825,15 @@ void MainComponent::setPerformanceMode (bool useSongMode)
 void MainComponent::updateModeVisibility()
 {
     const bool pattern = ! songMode;
-    for (auto* c : { static_cast<juce::Component*> (&sceneNameLabel), &sceneNameEditor, &sceneBarsLabel, &sceneBarsBox,
-                     &copySceneButton, &pasteSceneButton, &clearSceneButton, &addToSongButton })
-        c->setVisible (pattern);
+
+    sceneNameLabel.setVisible (pattern);
+    sceneNameEditor.setVisible (pattern);
+    sceneBarsLabel.setVisible (pattern);
+    sceneBarsBox.setVisible (pattern);
+    copySceneButton.setVisible (pattern);
+    pasteSceneButton.setVisible (pattern);
+    clearSceneButton.setVisible (pattern);
+    addToSongButton.setVisible (pattern);
 
     for (int i = 0; i < numTracks; ++i)
     {
@@ -835,12 +841,20 @@ void MainComponent::updateModeVisibility()
         loadButtons[i].setVisible (pattern);
         clearButtons[i].setVisible (pattern);
     }
-    for (auto& b : sceneButtons) b.setVisible (pattern);
 
-    for (auto* c : { static_cast<juce::Component*> (&removeSongStepButton), &holdSongStepButton, &continueSongButton,
-                     &clearSongButton, &prevSongPageButton, &songPageLabel, &nextSongPageButton })
-        c->setVisible (songMode);
-    for (auto& b : songStepButtons) b.setVisible (songMode);
+    for (auto& b : sceneButtons)
+        b.setVisible (pattern);
+
+    removeSongStepButton.setVisible (songMode);
+    holdSongStepButton.setVisible (songMode);
+    continueSongButton.setVisible (songMode);
+    clearSongButton.setVisible (songMode);
+    prevSongPageButton.setVisible (songMode);
+    songPageLabel.setVisible (songMode);
+    nextSongPageButton.setVisible (songMode);
+
+    for (auto& b : songStepButtons)
+        b.setVisible (songMode);
 }
 
 void MainComponent::addSelectedSceneToSong()
