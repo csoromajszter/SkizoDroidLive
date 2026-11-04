@@ -37,6 +37,44 @@ juce::String shortName (const juce::File& file)
 }
 }
 
+MainComponent::PlaybackBank::PlaybackBank()
+{
+    for (auto& track : tracks)
+        mixer.addInputSource (&track.transport, false);
+}
+
+MainComponent::PlaybackBank::~PlaybackBank()
+{
+    stop();
+    for (auto& track : tracks)
+    {
+        track.transport.setSource (nullptr);
+        track.readerSource.reset();
+    }
+    mixer.removeAllInputs();
+}
+
+void MainComponent::PlaybackBank::prepare (int blockSize, double rate)
+{
+    mixer.prepareToPlay (blockSize, rate);
+}
+
+void MainComponent::PlaybackBank::start()
+{
+    for (auto& track : tracks)
+        if (track.readerSource != nullptr)
+        {
+            track.transport.setPosition (0.0);
+            track.transport.start();
+        }
+}
+
+void MainComponent::PlaybackBank::stop()
+{
+    for (auto& track : tracks)
+        track.transport.stop();
+}
+
 MainComponent::MainComponent()
 {
     formatManager.registerBasicFormats();
@@ -206,7 +244,6 @@ MainComponent::MainComponent()
         clearButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (68, 44, 44));
         addAndMakeVisible (clearButtons[i]);
 
-        mixer.addInputSource (&tracks[i].transport, false);
     }
 
     for (int i = 0; i < numScenes; ++i)
@@ -236,6 +273,7 @@ MainComponent::MainComponent()
         addAndMakeVisible (chooseButtons[i]);
     }
 
+    diskReadThread.startThread();
     setSize (1500, 940);
     setAudioChannels (0, 2);
 
@@ -251,16 +289,8 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     shutdownAudio();
-
-    for (auto& track : tracks)
-    {
-        track.transport.stop();
-        track.transport.setSource (nullptr);
-        track.readerSource.reset();
-    }
-
-    mixer.removeAllInputs();
-
+    clearAudioBanks();
+    diskReadThread.stopThread (3000);
     if (workingFolder.isDirectory())
         workingFolder.deleteRecursively();
 }
@@ -346,7 +376,7 @@ bool MainComponent::writeProjectXml()
         return false;
 
     juce::XmlElement root ("SkizoDroidLiveProject");
-    root.setAttribute ("version", "0.9");
+    root.setAttribute ("version", "0.9.2");
     root.setAttribute ("bpm", bpmSlider.getValue());
 
     auto* scenesXml = root.createNewChildElement ("Scenes");
@@ -525,82 +555,207 @@ bool MainComponent::unpackProjectToWorkingFolder (const juce::File& sourceFile)
 
 void MainComponent::prepareToPlay (int samplesPerBlockExpected, double sampleRate)
 {
+    const juce::ScopedLock lock (audioBankLock);
+    playbackBlockSize = samplesPerBlockExpected;
     currentSampleRate = sampleRate;
-    mixer.prepareToPlay (samplesPerBlockExpected, sampleRate);
+    fadeTotalSamples = juce::jmax (1, static_cast<int> (std::round (sampleRate * 0.008)));
+    fadeScratch.setSize (2, juce::jmax (2048, samplesPerBlockExpected), false, false, true);
+    if (activeBank != nullptr) activeBank->prepare (samplesPerBlockExpected, sampleRate);
+    if (stagedBank != nullptr) stagedBank->prepare (samplesPerBlockExpected, sampleRate);
 }
 
-void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill)
+void MainComponent::renderBankWithFade (const juce::AudioSourceChannelInfo& block)
 {
-    if (! playing)
+    if (activeBank == nullptr)
     {
-        bufferToFill.clearActiveBufferRegion();
+        block.clearActiveBufferRegion();
         return;
     }
 
-    // V0.9.1: restore continuous playback. In V0.9 the fade state machine
-    // muted the output until a UI-thread transition was completed. That could
-    // produce an entire scene's worth of silence, so it is disabled here.
-    mixer.getNextAudioBlock (bufferToFill);
-
-    if (previewMode)
-        return; // Preview never advances the Song timeline.
-
-    samplesSinceSceneStart += bufferToFill.numSamples;
-    const auto samplesPerScene = getSamplesPerScene (currentScene);
-    if (samplesPerScene <= 0.0 || samplesSinceSceneStart < samplesPerScene)
+    activeBank->mixer.getNextAudioBlock (block);
+    if (fadingBank == nullptr || fadeSamplesRemaining <= 0)
         return;
 
-    samplesSinceSceneStart = std::fmod (samplesSinceSceneStart, samplesPerScene);
-
-    bool shouldChange = false;
-    if (songMode && currentSongStep >= 0)
+    // Scratch is preallocated in prepareToPlay. No heap allocations at a scene boundary.
+    const int total = block.numSamples;
+    int done = 0;
+    while (done < total)
     {
-        const bool held = songSteps[currentSongStep].hold;
-        shouldChange = queuedSongStep >= 0 || ! held || releaseHoldAtBoundary;
+        const int n = juce::jmin (total - done, fadeScratch.getNumSamples());
+        fadeScratch.clear();
+        juce::AudioSourceChannelInfo oldBlock (&fadeScratch, 0, n);
+        fadingBank->mixer.getNextAudioBlock (oldBlock);
+        const int fadeStart = fadeTotalSamples - fadeSamplesRemaining;
+        for (int channel = 0; channel < block.buffer->getNumChannels(); ++channel)
+        {
+            float* dest = block.buffer->getWritePointer (channel, block.startSample + done);
+            const float* old = fadeScratch.getReadPointer (juce::jmin (channel, fadeScratch.getNumChannels() - 1));
+            for (int i = 0; i < n; ++i)
+            {
+                const float position = juce::jlimit (0.0f, 1.0f,
+                    static_cast<float> (fadeStart + i) / static_cast<float> (fadeTotalSamples));
+                const float oldGain = (1.0f - position);
+                dest[i] = dest[i] * position + old[i] * oldGain;
+            }
+        }
+        fadeSamplesRemaining = juce::jmax (0, fadeSamplesRemaining - n);
+        done += n;
+        if (fadeSamplesRemaining <= 0)
+            break;
     }
-    else
-    {
-        shouldChange = queuedScene >= 0;
-    }
+}
 
-    if (! shouldChange || transitionCallbackScheduled.exchange (true))
+void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& block)
+{
+    // No file opens or source construction on the real-time audio thread.
+    const juce::ScopedLock lock (audioBankLock);
+    if (! playing || activeBank == nullptr)
+    {
+        block.clearActiveBufferRegion();
         return;
+    }
 
-    // Never intentionally wait in silence. The existing transport hand-off
-    // remains on the message thread until a two-bank engine is implemented.
-    juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    int remaining = block.numSamples;
+    int offset = block.startSample;
+    while (remaining > 0)
     {
-        if (safeThis != nullptr)
-            safeThis->completeQueuedTransition();
-    });
+        if (previewMode)
+        {
+            renderBankWithFade ({ block.buffer, offset, remaining });
+            return;
+        }
+
+        const double sceneDuration = getSamplesPerScene (currentScene);
+        const int untilBoundary = sceneDuration > 0.0
+            ? juce::jmax (1, static_cast<int> (std::ceil (sceneDuration - samplesSinceSceneStart)))
+            : remaining;
+        const int chunk = juce::jmin (remaining, untilBoundary);
+        renderBankWithFade ({ block.buffer, offset, chunk });
+        samplesSinceSceneStart += chunk;
+        offset += chunk;
+        remaining -= chunk;
+
+        if (sceneDuration <= 0.0 || samplesSinceSceneStart < sceneDuration)
+            continue;
+
+        samplesSinceSceneStart = std::fmod (samplesSinceSceneStart, sceneDuration);
+        if (boundaryHandoffPending)
+            continue;
+
+        bool canAdvance = false;
+        if (songMode && activeSongStepAudio >= 0)
+        {
+            const bool held = songSteps[activeSongStepAudio].hold;
+            canAdvance = queuedSongStep >= 0 || ! held || releaseHoldAtBoundary;
+        }
+        else
+            canAdvance = queuedScene >= 0;
+
+        if (! canAdvance)
+            continue;
+
+        if (stagedBank != nullptr && fadingBank == nullptr)
+        {
+            fadingBank = activeBank;
+            activeBank = stagedBank;
+            stagedBank.reset();
+            currentScene = stagedSceneIndex;
+            activeSongStepAudio = stagedSongStepIndex;
+            stagedSceneIndex = -1;
+            stagedSongStepIndex = -1;
+            activeBank->start();
+            fadeSamplesRemaining = fadeTotalSamples;
+            samplesSinceSceneStart = 0.0;
+            boundaryHandoffPending = true;
+            if (! transitionCallbackScheduled.exchange (true))
+                juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
+                {
+                    if (safe != nullptr) safe->finishAudioHandoffOnUi();
+                });
+        }
+        else if (stagedBank == nullptr && songMode && activeSongStepAudio >= 0
+                 && queuedSongStep < 0 && findFollowingSongStep (activeSongStepAudio) < 0)
+        {
+            // End of song: stop at the musical boundary, without a silent extra bar.
+            boundaryHandoffPending = true;
+            juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
+            {
+                if (safe != nullptr) safe->stopAll();
+            });
+        }
+        else if (stagedBank == nullptr && ! preloadRetryPending)
+        {
+            // An unprepared scene never causes a mute: keep the existing loop playing.
+            preloadRetryPending = true;
+            juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
+            {
+                if (safe != nullptr)
+                {
+                    safe->preloadRetryPending = false;
+                    safe->prepareUpcomingScene();
+                }
+            });
+        }
+    }
+
+    if (fadingBank != nullptr && fadeSamplesRemaining <= 0 && ! preloadRetryPending)
+    {
+        preloadRetryPending = true;
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
+        {
+            if (safe != nullptr)
+            {
+                safe->preloadRetryPending = false;
+                std::shared_ptr<PlaybackBank> oldBank;
+                {
+                    const juce::ScopedLock guard (safe->audioBankLock);
+                    if (safe->fadeSamplesRemaining <= 0)
+                        oldBank = std::move (safe->fadingBank);
+                }
+                // Destruct the retired bank outside the audio callback and the lock.
+                oldBank.reset();
+                safe->prepareUpcomingScene();
+            }
+        });
+    }
+}
+
+void MainComponent::finishAudioHandoffOnUi()
+{
+    transitionCallbackScheduled.store (false);
+    if (! playing) return;
+    if (songMode && activeSongStepAudio >= 0)
+    {
+        currentSongStep = activeSongStepAudio;
+        selectedSongStep = currentSongStep;
+        songPage = currentSongStep / visibleSongSteps;
+        queuedSongStep = -1;
+        releaseHoldAtBoundary = false;
+    }
+    else queuedScene = -1;
+    selectedScene = currentScene;
+    refreshTrackButtons();
+    refreshSceneButtons();
+    refreshSceneEditor();
+    refreshSongUi();
+    updateStatus();
+    boundaryHandoffPending = false;
+    // A new bank is prepared after the 8 ms overlap has finished.
+    prepareUpcomingScene();
 }
 
 void MainComponent::completeQueuedTransition()
 {
-    if (! playing)
-    {
-        transitionCallbackScheduled.store (false);
-        return;
-    }
-
-    if (songMode && currentSongStep >= 0)
-    {
-        releaseHoldAtBoundary = false;
-        advanceSongAtBoundary();
-    }
-    else if (queuedScene >= 0)
-    {
-        const int next = queuedScene;
-        queuedScene = -1;
-        startSceneNow (next);
-    }
-
-    transitionCallbackScheduled.store (false);
+    // Retained for compatibility with existing UI callbacks.
+    finishAudioHandoffOnUi();
 }
 
 void MainComponent::releaseResources()
 {
-    mixer.releaseResources();
+    const juce::ScopedLock lock (audioBankLock);
+    if (activeBank != nullptr) activeBank->mixer.releaseResources();
+    if (stagedBank != nullptr) stagedBank->mixer.releaseResources();
+    if (fadingBank != nullptr) fadingBank->mixer.releaseResources();
 }
 
 void MainComponent::paint (juce::Graphics& g)
@@ -1236,6 +1391,7 @@ void MainComponent::continueSong()
     if (playing && songMode && currentSongStep >= 0 && currentSongStep < songStepCount && songSteps[currentSongStep].hold)
     {
         releaseHoldAtBoundary = true;
+        prepareUpcomingScene();
         updateStatus();
     }
 }
@@ -1254,6 +1410,7 @@ void MainComponent::selectSongStep (int absoluteIndex)
         {
             // Backward or forward live jump: queued until the scene boundary.
             queuedSongStep = absoluteIndex;
+            prepareUpcomingScene();
         }
     }
 
@@ -1415,61 +1572,125 @@ void MainComponent::triggerScene (int sceneIndex)
     refreshSceneEditor();
     if (! playing) { startSceneNow (sceneIndex); return; }
     queuedScene = sceneIndex;
+    prepareUpcomingScene();
     refreshSceneButtons();
     updateStatus();
 }
 
-bool MainComponent::loadSceneIntoTransports (int sceneIndex)
+std::shared_ptr<MainComponent::PlaybackBank> MainComponent::buildPlaybackBank (int sceneIndex)
 {
-    bool anyLoaded = false;
+    if (sceneIndex < 0 || sceneIndex >= numScenes) return {};
+    auto bank = std::make_shared<PlaybackBank>();
+    bank->sceneIndex = sceneIndex;
     for (int i = 0; i < numTracks; ++i)
     {
-        auto& track = tracks[i];
-        track.transport.stop();
-        track.transport.setSource (nullptr);
-        track.readerSource.reset();
-        track.loadedFile = {};
-
         const auto& file = scenes[sceneIndex][i];
         if (! file.existsAsFile()) continue;
-
         std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
         if (reader == nullptr) continue;
-
-        const double sourceSampleRate = reader->sampleRate;
-        auto newSource = std::make_unique<juce::AudioFormatReaderSource> (reader.release(), true);
-        newSource->setLooping (true);
-        track.transport.setSource (newSource.get(), 0, nullptr, sourceSampleRate);
-        track.readerSource = std::move (newSource);
+        const double sourceRate = reader->sampleRate;
+        auto source = std::make_unique<juce::AudioFormatReaderSource> (reader.release(), true);
+        source->setLooping (true);
+        auto& track = bank->tracks[i];
+        track.transport.setSource (source.get(), 32768, &diskReadThread, sourceRate);
+        track.readerSource = std::move (source);
         track.loadedFile = file;
-        anyLoaded = true;
     }
-    return anyLoaded;
+    bank->prepare (playbackBlockSize, currentSampleRate);
+    return bank;
+}
+
+int MainComponent::findFollowingSongStep (int fromIndex) const
+{
+    for (int i = fromIndex + 1; i < songStepCount; ++i)
+        if (songSteps[i].sceneIndex >= 0)
+            return i;
+    return -1;
+}
+
+void MainComponent::prepareUpcomingScene()
+{
+    if (! playing || previewMode || boundaryHandoffPending) return;
+    // Never destroy the outgoing bank until its 8 ms fade has ended.
+    {
+        const juce::ScopedLock lock (audioBankLock);
+        if (fadingBank != nullptr) return;
+    }
+
+    int targetScene = -1;
+    int targetStep = -1;
+    if (songMode && activeSongStepAudio >= 0)
+    {
+        if (queuedSongStep >= 0 && queuedSongStep < maxSongSteps
+            && songSteps[queuedSongStep].sceneIndex >= 0)
+            targetStep = queuedSongStep;
+        else if (! songSteps[activeSongStepAudio].hold || releaseHoldAtBoundary)
+            targetStep = findFollowingSongStep (activeSongStepAudio);
+
+        if (targetStep >= 0)
+            targetScene = songSteps[targetStep].sceneIndex;
+    }
+    else if (! songMode && queuedScene >= 0)
+        targetScene = queuedScene;
+
+    if (targetScene < 0) return;
+    if (stagedBank != nullptr && stagedSceneIndex == targetScene
+        && stagedSongStepIndex == targetStep) return;
+
+    // All WAV construction and disk I/O happen on the message thread, not in audio.
+    auto ready = buildPlaybackBank (targetScene);
+    std::shared_ptr<PlaybackBank> previous;
+    {
+        const juce::ScopedLock lock (audioBankLock);
+        if (! playing || boundaryHandoffPending || fadingBank != nullptr) return;
+        previous = std::move (stagedBank);
+        stagedBank = std::move (ready);
+        stagedSceneIndex = targetScene;
+        stagedSongStepIndex = targetStep;
+    }
+    previous.reset();
+}
+
+void MainComponent::clearAudioBanks()
+{
+    std::shared_ptr<PlaybackBank> a, b, f;
+    {
+        const juce::ScopedLock lock (audioBankLock);
+        a = std::move (activeBank);
+        b = std::move (stagedBank);
+        f = std::move (fadingBank);
+        stagedSceneIndex = -1;
+        stagedSongStepIndex = -1;
+        activeSongStepAudio = -1;
+        fadeSamplesRemaining = 0;
+        boundaryHandoffPending = false;
+    }
+    a.reset(); b.reset(); f.reset();
 }
 
 void MainComponent::startSceneNow (int sceneIndex)
 {
-    currentScene = sceneIndex;
-    selectedScene = sceneIndex;
-    queuedScene = -1;
-    samplesSinceSceneStart = 0.0;
-    loadSceneIntoTransports (sceneIndex);
-
-    for (auto& track : tracks)
+    // Explicit PLAY or audition: prepare one complete bank before it can output.
+    // This is intentionally not used for a queued, real-time scene handoff.
+    auto ready = buildPlaybackBank (sceneIndex);
+    clearAudioBanks();
     {
-        if (track.readerSource != nullptr)
-        {
-            track.transport.setPosition (0.0);
-            track.transport.start();
-        }
+        const juce::ScopedLock lock (audioBankLock);
+        activeBank = std::move (ready);
+        activeSongStepAudio = songMode && ! choosingSongScene ? currentSongStep : -1;
+        currentScene = sceneIndex;
+        samplesSinceSceneStart = 0.0;
+        queuedScene = -1;
+        playing = true;
+        if (activeBank != nullptr) activeBank->start();
     }
-
-    playing = true;
+    selectedScene = sceneIndex;
     refreshTrackButtons();
     refreshSceneButtons();
     refreshSceneEditor();
     refreshSongUi();
     updateStatus();
+    prepareUpcomingScene();
 }
 
 void MainComponent::startPlayback()
@@ -1501,12 +1722,11 @@ void MainComponent::startPlayback()
 
 void MainComponent::stopAll()
 {
-    for (auto& track : tracks)
     {
-        track.transport.stop();
-        track.transport.setPosition (0.0);
+        const juce::ScopedLock lock (audioBankLock);
+        playing = false;
     }
-    playing = false;
+    clearAudioBanks();
     queuedScene = -1;
     queuedSongStep = -1;
     previewMode = false;

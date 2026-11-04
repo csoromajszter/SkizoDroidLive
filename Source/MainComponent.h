@@ -43,15 +43,41 @@ private:
         bool hold = false;
     };
 
-    std::array<LoopTrack, numTracks> tracks;
+    // Each bank owns its own WAV readers, transports and mixer.
+    // The inactive bank is constructed on the UI thread before its launch boundary.
+    struct PlaybackBank
+    {
+        std::array<LoopTrack, numTracks> tracks;
+        juce::MixerAudioSource mixer;
+        int sceneIndex = -1;
+        PlaybackBank();
+        ~PlaybackBank();
+        void prepare (int blockSize, double sampleRate);
+        void start();
+        void stop();
+    };
+
+    std::shared_ptr<PlaybackBank> activeBank;
+    std::shared_ptr<PlaybackBank> stagedBank;
+    std::shared_ptr<PlaybackBank> fadingBank;
+    juce::CriticalSection audioBankLock;
+    juce::TimeSliceThread diskReadThread { "SkizoDroid WAV read-ahead" };
+    int playbackBlockSize = 512;
+    int stagedSceneIndex = -1;
+    int stagedSongStepIndex = -1;
+    int activeSongStepAudio = -1;
+    int fadeSamplesRemaining = 0;
+    int fadeTotalSamples = 1;
+    bool boundaryHandoffPending = false;
+    bool preloadRetryPending = false;
+    juce::AudioBuffer<float> fadeScratch;
+
     std::array<SceneClipMap, numScenes> scenes;
     std::array<juce::String, numScenes> sceneNames;
     std::array<int, numScenes> sceneBars;
     std::array<SongStep, maxSongSteps> songSteps;
 
     juce::AudioFormatManager formatManager;
-    juce::MixerAudioSource mixer;
-
     juce::Label titleLabel;
     juce::Label statusLabel;
     juce::Label projectLabel;
@@ -193,7 +219,12 @@ private:
 
     void triggerScene (int sceneIndex);
     void startSceneNow (int sceneIndex);
-    bool loadSceneIntoTransports (int sceneIndex);
+    std::shared_ptr<PlaybackBank> buildPlaybackBank (int sceneIndex);
+    void prepareUpcomingScene();
+    void clearAudioBanks();
+    void finishAudioHandoffOnUi();
+    void renderBankWithFade (const juce::AudioSourceChannelInfo& block);
+    int findFollowingSongStep (int fromIndex) const;
 
     void startPlayback();
     void stopAll();
