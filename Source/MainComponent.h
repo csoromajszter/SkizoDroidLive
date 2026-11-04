@@ -162,6 +162,12 @@ private:
     // The audio callback publishes the scene actually reaching the output.
     std::atomic<int> audibleScene { -1 };
     std::atomic<int> audibleSongStep { -1 };
+    // Diagnostic-only timestamp published from the audio callback (no file I/O there).
+    std::atomic<double> audioSceneChangeMs { 0.0 };
+    double previousUiTimerMs = 0.0;
+    juce::File diagnosticLog;
+    void traceEvent (const juce::String& event);
+
     int lastUiAudibleScene = -1;
     int lastUiAudibleSongStep = -1;
     bool loadingProjectUi = false;

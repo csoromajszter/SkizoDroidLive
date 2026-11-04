@@ -119,6 +119,9 @@ MainComponent::MainComponent()
     initialiseDefaults();
     createFreshWorkingFolder();
     initialiseAppSettings();
+    diagnosticLog = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+        .getChildFile ("SkizoDroidLive_Diagnostics.log");
+    traceEvent ("===== START SkizoDroid Live V0.9.5 diagnostics =====");
 
     logoDrawable = juce::Drawable::createFromImageData (
         BinaryData::skizodroid_logo_header_png,
@@ -325,21 +328,38 @@ MainComponent::MainComponent()
     startTimerHz (30); // visual polling, never drives playback scheduling
 }
 
+void MainComponent::traceEvent (const juce::String& event)
+{
+    // Never call this from getNextAudioBlock(). File I/O is only on the message thread.
+    if (diagnosticLog == juce::File()) return;
+    diagnosticLog.appendText (juce::Time::getCurrentTime().toISO8601 (true)
+                              + "  |  " + event + "\n");
+}
+
 MainComponent::~MainComponent()
 {
+    const auto started = juce::Time::getMillisecondCounterHiRes();
+    traceEvent ("SHUTDOWN begin");
     stopTimer();
     playing.store (false, std::memory_order_release);
     audibleScene.store (-1, std::memory_order_release);
     ++bankRequestSerial;
-    // Wake/stop the audio device first; the reader pool is no longer needed.
-    // A worker must finish before this object or its read-ahead thread is destroyed.
+    traceEvent ("SHUTDOWN shutdownAudio BEGIN");
     shutdownAudio();
+    traceEvent ("SHUTDOWN shutdownAudio END elapsed_ms="
+                + juce::String (juce::Time::getMillisecondCounterHiRes() - started, 1));
+    traceEvent ("SHUTDOWN preloadPool.removeAllJobs BEGIN");
     preloadPool.removeAllJobs (true, 10000);
+    traceEvent ("SHUTDOWN preloadPool.removeAllJobs END elapsed_ms="
+                + juce::String (juce::Time::getMillisecondCounterHiRes() - started, 1));
+    traceEvent ("SHUTDOWN clearAudioBanks BEGIN");
     clearAudioBanks();
+    traceEvent ("SHUTDOWN clearAudioBanks END elapsed_ms="
+                + juce::String (juce::Time::getMillisecondCounterHiRes() - started, 1));
+    traceEvent ("SHUTDOWN diskReadThread.stopThread BEGIN");
     diskReadThread.stopThread (3000);
-    // Do not synchronously delete potentially gigabytes of extracted WAVs
-    // while the user waits for the application window to close.
-    // The temporary cache can be cleaned on a later launch.
+    traceEvent ("SHUTDOWN complete total_ms="
+                + juce::String (juce::Time::getMillisecondCounterHiRes() - started, 1));
 }
 
 void MainComponent::initialiseDefaults()
@@ -720,6 +740,8 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& block
             activeSongStepAudio = stagedSongStepIndex;
             audibleScene.store (currentScene, std::memory_order_release);
             audibleSongStep.store (activeSongStepAudio, std::memory_order_release);
+            audioSceneChangeMs.store (juce::Time::getMillisecondCounterHiRes(),
+                                      std::memory_order_release);
             stagedSceneIndex = -1;
             stagedSongStepIndex = -1;
             activeBank->start();
@@ -781,6 +803,10 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& block
 
 void MainComponent::finishAudioHandoffOnUi()
 {
+    traceEvent ("HANDOFF UI callback scene=" + juce::String (audibleScene.load() + 1)
+                + " delay_ms=" + juce::String (
+                    juce::Time::getMillisecondCounterHiRes()
+                    - audioSceneChangeMs.load (std::memory_order_acquire), 1));
     transitionCallbackScheduled.store (false);
     if (! playing) return;
     if (songMode && activeSongStepAudio >= 0)
@@ -1695,6 +1721,8 @@ void MainComponent::requestBank (int sceneIndex, int songStep, bool startImmedia
 void MainComponent::receiveBuiltBank (juce::uint64 serial, int sceneIndex, int songStep,
                                      bool startImmediately, std::shared_ptr<PlaybackBank> bank)
 {
+    traceEvent ("PRELOAD result scene=" + juce::String (sceneIndex + 1)
+                + " current=" + juce::String (serial == bankRequestSerial.load() ? 1 : 0));
     if (serial != bankRequestSerial.load() || bank == nullptr)
         return;
     loadingScene = -1;
@@ -1749,6 +1777,8 @@ void MainComponent::activatePreparedBank (int sceneIndex, int songStep,
         currentScene = sceneIndex;
         audibleScene.store (sceneIndex, std::memory_order_release);
         audibleSongStep.store (songStep, std::memory_order_release);
+        audioSceneChangeMs.store (juce::Time::getMillisecondCounterHiRes(),
+                                  std::memory_order_release);
         samplesSinceSceneStart = 0.0;
         queuedScene = -1;
         fadeSamplesRemaining = 0;
@@ -1878,6 +1908,8 @@ void MainComponent::startPlayback()
 
 void MainComponent::stopAll()
 {
+    traceEvent ("STOP requested scene=" + juce::String (audibleScene.load())
+                + " playing=" + juce::String (playing.load() ? 1 : 0));
     // Make the next audio block silent before attempting any bank cleanup.
     playing.store (false, std::memory_order_release);
     audibleScene.store (-1, std::memory_order_release);
@@ -1899,6 +1931,7 @@ void MainComponent::stopAll()
     refreshSceneButtons();
     refreshSongUi();
     updateStatus();
+    traceEvent ("STOP handler finished");
 }
 
 void MainComponent::updateProjectLabel()
@@ -1908,6 +1941,10 @@ void MainComponent::updateProjectLabel()
 
 void MainComponent::timerCallback()
 {
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    if (previousUiTimerMs > 0.0 && nowMs - previousUiTimerMs > 125.0)
+        traceEvent ("UI TIMER GAP ms=" + juce::String (nowMs - previousUiTimerMs, 1));
+    previousUiTimerMs = nowMs;
     const int scene = playing.load (std::memory_order_acquire)
         ? audibleScene.load (std::memory_order_acquire) : -1;
     const int step = playing.load (std::memory_order_acquire)
@@ -1915,11 +1952,17 @@ void MainComponent::timerCallback()
 
     if (scene != lastUiAudibleScene || step != lastUiAudibleSongStep)
     {
+        const auto switchedMs = audioSceneChangeMs.load (std::memory_order_acquire);
+        const auto uiLagMs = switchedMs > 0.0 && scene >= 0 ? nowMs - switchedMs : 0.0;
+        traceEvent ("UI SCENE UPDATE begin scene=" + juce::String (scene + 1)
+                    + " step=" + juce::String (step + 1)
+                    + " audio_to_ui_ms=" + juce::String (uiLagMs, 1));
         lastUiAudibleScene = scene;
         lastUiAudibleSongStep = step;
         refreshSceneButtons();
         refreshSongUi();
-        // UI-only: never acquire the audio-bank lock or change playback here.
+        traceEvent ("UI SCENE UPDATE end update_duration_ms="
+                    + juce::String (juce::Time::getMillisecondCounterHiRes() - nowMs, 1));
     }
 }
 
