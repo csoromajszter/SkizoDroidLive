@@ -57,6 +57,14 @@ private:
         void stop();
     };
 
+    // Decode and prepare the next scene on a worker rather than on the UI/audio threads.
+    class BankBuildJob;
+    juce::ThreadPool preloadPool { 1 };
+    std::atomic<juce::uint64> bankRequestSerial { 0 };
+    int loadingScene = -1;
+    int loadingStep = -1;
+    bool loadingForPlay = false;
+
     std::shared_ptr<PlaybackBank> activeBank;
     std::shared_ptr<PlaybackBank> stagedBank;
     std::shared_ptr<PlaybackBank> fadingBank;
@@ -150,7 +158,7 @@ private:
     int previewSceneIndex = -1;
     bool previewMode = false;
 
-    bool playing = false;
+    std::atomic<bool> playing { false };
     bool loadingProjectUi = false;
 
     int selectedScene = 0;
@@ -219,7 +227,13 @@ private:
 
     void triggerScene (int sceneIndex);
     void startSceneNow (int sceneIndex);
-    std::shared_ptr<PlaybackBank> buildPlaybackBank (int sceneIndex);
+    std::shared_ptr<PlaybackBank> buildPlaybackBank (int sceneIndex,
+        const SceneClipMap& clipFiles, int blockSize, double sampleRate,
+        juce::uint64 serial);
+    void requestBank (int sceneIndex, int songStep, bool startImmediately);
+    void receiveBuiltBank (juce::uint64 serial, int sceneIndex, int songStep,
+                           bool startImmediately, std::shared_ptr<PlaybackBank> bank);
+    void activatePreparedBank (int sceneIndex, int songStep, std::shared_ptr<PlaybackBank> bank);
     void prepareUpcomingScene();
     void clearAudioBanks();
     void finishAudioHandoffOnUi();
