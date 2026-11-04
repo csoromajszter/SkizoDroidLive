@@ -322,18 +322,24 @@ MainComponent::MainComponent()
     updateModeVisibility();
     updateProjectLabel();
     updateStatus();
+    startTimerHz (30); // visual polling, never drives playback scheduling
 }
 
 MainComponent::~MainComponent()
 {
-    // No bank worker may reference this component after destruction.
+    stopTimer();
+    playing.store (false, std::memory_order_release);
+    audibleScene.store (-1, std::memory_order_release);
     ++bankRequestSerial;
-    preloadPool.removeAllJobs (true, 10000);
+    // Wake/stop the audio device first; the reader pool is no longer needed.
+    // A worker must finish before this object or its read-ahead thread is destroyed.
     shutdownAudio();
+    preloadPool.removeAllJobs (true, 10000);
     clearAudioBanks();
     diskReadThread.stopThread (3000);
-    if (workingFolder.isDirectory())
-        workingFolder.deleteRecursively();
+    // Do not synchronously delete potentially gigabytes of extracted WAVs
+    // while the user waits for the application window to close.
+    // The temporary cache can be cleaned on a later launch.
 }
 
 void MainComponent::initialiseDefaults()
@@ -614,6 +620,11 @@ void MainComponent::renderBankWithFade (const juce::AudioSourceChannelInfo& bloc
     }
 
     activeBank->mixer.getNextAudioBlock (block);
+    if (! playing.load (std::memory_order_acquire))
+    {
+        block.clearActiveBufferRegion();
+        return;
+    }
     if (fadingBank == nullptr || fadeSamplesRemaining <= 0)
         return;
 
@@ -672,6 +683,11 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& block
             : remaining;
         const int chunk = juce::jmin (remaining, untilBoundary);
         renderBankWithFade ({ block.buffer, offset, chunk });
+        if (! playing.load (std::memory_order_acquire))
+        {
+            block.clearActiveBufferRegion();
+            return;
+        }
         samplesSinceSceneStart += chunk;
         offset += chunk;
         remaining -= chunk;
@@ -702,6 +718,8 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& block
             stagedBank.reset();
             currentScene = stagedSceneIndex;
             activeSongStepAudio = stagedSongStepIndex;
+            audibleScene.store (currentScene, std::memory_order_release);
+            audibleSongStep.store (activeSongStepAudio, std::memory_order_release);
             stagedSceneIndex = -1;
             stagedSongStepIndex = -1;
             activeBank->start();
@@ -1509,7 +1527,7 @@ void MainComponent::refreshSongUi()
                               absoluteIndex == selectedSongStep ? juce::Colour::fromRGB (64, 64, 82)
                                                                 : juce::Colour::fromRGB (32, 32, 38));
 
-            if (absoluteIndex == currentSongStep && playing && songMode)
+            if (absoluteIndex == audibleSongStep.load (std::memory_order_acquire) && playing && songMode)
                 button.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (90, 70, 40));
         }
         else
@@ -1601,7 +1619,7 @@ void MainComponent::refreshSceneButtons()
         sceneButtons[i].setColour (juce::TextButton::buttonColourId,
                                    i == selectedScene ? juce::Colour::fromRGB (65, 65, 78)
                                                       : juce::Colour::fromRGB (34, 34, 38));
-        if (i == currentScene && playing)
+        if (i == audibleScene.load (std::memory_order_acquire) && playing)
             sceneButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (90, 70, 40));
         if (i == queuedScene)
             sceneButtons[i].setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (55, 75, 95));
@@ -1729,6 +1747,8 @@ void MainComponent::activatePreparedBank (int sceneIndex, int songStep,
         activeBank = std::move (ready);
         activeSongStepAudio = songStep;
         currentScene = sceneIndex;
+        audibleScene.store (sceneIndex, std::memory_order_release);
+        audibleSongStep.store (songStep, std::memory_order_release);
         samplesSinceSceneStart = 0.0;
         queuedScene = -1;
         fadeSamplesRemaining = 0;
@@ -1859,7 +1879,9 @@ void MainComponent::startPlayback()
 void MainComponent::stopAll()
 {
     // Make the next audio block silent before attempting any bank cleanup.
-    playing = false;
+    playing.store (false, std::memory_order_release);
+    audibleScene.store (-1, std::memory_order_release);
+    audibleSongStep.store (-1, std::memory_order_release);
     ++bankRequestSerial; // stale background jobs may not start playback later
     loadingScene = -1;
     loadingStep = -1;
@@ -1882,6 +1904,23 @@ void MainComponent::stopAll()
 void MainComponent::updateProjectLabel()
 {
     projectLabel.setText (projectFile == juce::File() ? "NO PROJECT" : projectFile.getFileName(), juce::dontSendNotification);
+}
+
+void MainComponent::timerCallback()
+{
+    const int scene = playing.load (std::memory_order_acquire)
+        ? audibleScene.load (std::memory_order_acquire) : -1;
+    const int step = playing.load (std::memory_order_acquire)
+        ? audibleSongStep.load (std::memory_order_acquire) : -1;
+
+    if (scene != lastUiAudibleScene || step != lastUiAudibleSongStep)
+    {
+        lastUiAudibleScene = scene;
+        lastUiAudibleSongStep = step;
+        refreshSceneButtons();
+        refreshSongUi();
+        // UI-only: never acquire the audio-bank lock or change playback here.
+    }
 }
 
 void MainComponent::updateStatus()

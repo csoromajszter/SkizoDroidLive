@@ -7,7 +7,7 @@
 #include <atomic>
 #include <memory>
 
-class MainComponent : public juce::AudioAppComponent
+class MainComponent : public juce::AudioAppComponent, private juce::Timer
 {
 public:
     MainComponent();
@@ -159,6 +159,11 @@ private:
     bool previewMode = false;
 
     std::atomic<bool> playing { false };
+    // The audio callback publishes the scene actually reaching the output.
+    std::atomic<int> audibleScene { -1 };
+    std::atomic<int> audibleSongStep { -1 };
+    int lastUiAudibleScene = -1;
+    int lastUiAudibleSongStep = -1;
     bool loadingProjectUi = false;
 
     int selectedScene = 0;
@@ -243,6 +248,7 @@ private:
     void startPlayback();
     void stopAll();
 
+    void timerCallback() override;
     void updateStatus();
     double getSamplesPerBar() const;
     double getSamplesPerScene (int sceneIndex) const;
