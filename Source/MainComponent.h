@@ -59,7 +59,11 @@ private:
 
     // Decode and prepare the next scene on a worker rather than on the UI/audio threads.
     class BankBuildJob;
+    class BankRetireJob;
     juce::ThreadPool preloadPool { 1 };
+    // Bank destruction can block for seconds while read-ahead transports release resources.
+    // Never destroy obsolete playback banks on the message/UI thread.
+    juce::ThreadPool bankRetirePool { 1 };
     std::atomic<juce::uint64> bankRequestSerial { 0 };
     int loadingScene = -1;
     int loadingStep = -1;
@@ -247,6 +251,7 @@ private:
     void activatePreparedBank (int sceneIndex, int songStep, std::shared_ptr<PlaybackBank> bank);
     void prepareUpcomingScene();
     void clearAudioBanks();
+    void retireBank (std::shared_ptr<PlaybackBank> bank);
     void finishAudioHandoffOnUi();
     void renderBankWithFade (const juce::AudioSourceChannelInfo& block);
     int findFollowingSongStep (int fromIndex) const;

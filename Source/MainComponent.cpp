@@ -37,6 +37,29 @@ juce::String shortName (const juce::File& file)
 }
 }
 
+// Destruct a retired bank on a dedicated worker. The bank's WAV readers and
+// read-ahead transports must remain alive until the worker releases them.
+class MainComponent::BankRetireJob final : public juce::ThreadPoolJob
+{
+public:
+    explicit BankRetireJob (std::shared_ptr<PlaybackBank> old)
+        : juce::ThreadPoolJob ("Retire SkizoDroid audio bank"), bank (std::move (old)) {}
+
+    JobStatus runJob() override
+    {
+        bank.reset(); // may wait for JUCE read-ahead; NEVER on UI/audio threads
+        return jobHasFinished;
+    }
+private:
+    std::shared_ptr<PlaybackBank> bank;
+};
+
+void MainComponent::retireBank (std::shared_ptr<PlaybackBank> bank)
+{
+    if (bank != nullptr)
+        bankRetirePool.addJob (new BankRetireJob (std::move (bank)), true);
+}
+
 MainComponent::PlaybackBank::PlaybackBank()
 {
     for (auto& track : tracks)
@@ -355,6 +378,12 @@ MainComponent::~MainComponent()
     traceEvent ("SHUTDOWN clearAudioBanks BEGIN");
     clearAudioBanks();
     traceEvent ("SHUTDOWN clearAudioBanks END elapsed_ms="
+                + juce::String (juce::Time::getMillisecondCounterHiRes() - started, 1));
+    traceEvent ("SHUTDOWN retire pending banks BEGIN");
+    // Drain retirements while diskReadThread is still alive; otherwise transports
+    // could outlive their read-ahead source thread. This is a safe JOIN, not detach.
+    bankRetirePool.removeAllJobs (true, 15000);
+    traceEvent ("SHUTDOWN retire pending banks END elapsed_ms="
                 + juce::String (juce::Time::getMillisecondCounterHiRes() - started, 1));
     traceEvent ("SHUTDOWN diskReadThread.stopThread BEGIN");
     diskReadThread.stopThread (3000);
@@ -793,8 +822,8 @@ void MainComponent::getNextAudioBlock (const juce::AudioSourceChannelInfo& block
                     if (safe->fadeSamplesRemaining <= 0)
                         oldBank = std::move (safe->fadingBank);
                 }
-                // Destruct the retired bank outside the audio callback and the lock.
-                oldBank.reset();
+                // Never block the UI waiting for JUCE transport/read-ahead cleanup.
+                safe->retireBank (std::move (oldBank));
                 safe->prepareUpcomingScene();
             }
         });
@@ -1724,7 +1753,10 @@ void MainComponent::receiveBuiltBank (juce::uint64 serial, int sceneIndex, int s
     traceEvent ("PRELOAD result scene=" + juce::String (sceneIndex + 1)
                 + " current=" + juce::String (serial == bankRequestSerial.load() ? 1 : 0));
     if (serial != bankRequestSerial.load() || bank == nullptr)
+    {
+        retireBank (std::move (bank));
         return;
+    }
     loadingScene = -1;
     loadingStep = -1;
     loadingForPlay = false;
@@ -1747,19 +1779,26 @@ void MainComponent::receiveBuiltBank (juce::uint64 serial, int sceneIndex, int s
             stagedSceneIndex = sceneIndex;
             stagedSongStepIndex = songStep;
         }
+        retireBank (std::move (previous));
         return;
     }
 
     std::shared_ptr<PlaybackBank> previous;
+    bool canStage = false;
     {
         const juce::ScopedLock lock (audioBankLock);
-        if (boundaryHandoffPending || fadingBank != nullptr)
-            return;
-        previous = std::move (stagedBank);
-        stagedBank = std::move (bank);
-        stagedSceneIndex = sceneIndex;
-        stagedSongStepIndex = songStep;
+        canStage = ! boundaryHandoffPending && fadingBank == nullptr;
+        if (canStage)
+        {
+            previous = std::move (stagedBank);
+            stagedBank = std::move (bank);
+            stagedSceneIndex = sceneIndex;
+            stagedSongStepIndex = songStep;
+        }
     }
+    retireBank (std::move (previous));
+    if (! canStage)
+        retireBank (std::move (bank));
 }
 
 void MainComponent::activatePreparedBank (int sceneIndex, int songStep,
@@ -1788,6 +1827,9 @@ void MainComponent::activatePreparedBank (int sceneIndex, int songStep,
         activeBank->start();
         playing = true;
     }
+    retireBank (std::move (oldActive));
+    retireBank (std::move (oldStaged));
+    retireBank (std::move (oldFading));
     selectedScene = sceneIndex;
     refreshTrackButtons();
     refreshSceneButtons();
@@ -1854,6 +1896,9 @@ void MainComponent::clearAudioBanks()
         fadeSamplesRemaining = 0;
         boundaryHandoffPending = false;
     }
+    retireBank (std::move (a));
+    retireBank (std::move (b));
+    retireBank (std::move (f));
 }
 
 void MainComponent::startSceneNow (int sceneIndex)
