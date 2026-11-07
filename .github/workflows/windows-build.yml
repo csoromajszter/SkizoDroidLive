@@ -1,33 +1,62 @@
-name: Windows Build
+name: Build Windows Portable x64
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build-windows:
+  windows-portable:
+    name: Windows 10-11 x64 (portable)
     runs-on: windows-latest
-
+    timeout-minutes: 45
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Checkout JUCE
-        uses: actions/checkout@v4
+      - name: Get JUCE
+        shell: pwsh
+        run: git clone --depth 1 https://github.com/juce-framework/JUCE.git JUCE
+
+      - name: Configure (MSVC static CRT)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 18 2026" -A x64 `
+            "-DJUCE_DIR=${{ github.workspace }}/JUCE" `
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Package portable EXE and check CRT linkage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path build -Recurse -Filter SkizoDroidLive.exe -File |
+            Where-Object { $_.FullName -match '[\/]Release[\/]' } |
+            Select-Object -First 1
+          if (-not $exe) { throw 'SkizoDroidLive.exe not found in Release outputs' }
+          New-Item -ItemType Directory -Force package/SkizoDroidLive-Windows-x64 | Out-Null
+          Copy-Item $exe.FullName package/SkizoDroidLive-Windows-x64/
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found on Windows runner' }
+          $vsroot = & $vswhere -latest -property installationPath
+          $dumpbin = Get-ChildItem -Path (Join-Path $vsroot 'VC/Tools/MSVC') -Recurse -File -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match 'Hostx64[\\/]x64' } | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found in Visual Studio tools' }
+          $deps = (& $dumpbin.FullName /dependents $exe.FullName | Out-String)
+          $deps | Set-Content package/SkizoDroidLive-Windows-x64/dependencies.txt
+          if ($deps -match '(?i)\b(VCRUNTIME[0-9_]*|MSVCP[0-9_]*|CONCRT[0-9_]*)\.DLL\b') {
+            throw 'EXE still depends on an MSVC redistributable DLL; portable build must be fixed'
+          }
+          Compress-Archive -Path package/SkizoDroidLive-Windows-x64 -DestinationPath SkizoDroidLive-Windows-x64-Portable.zip -Force
+
+      - uses: actions/upload-artifact@v4
         with:
-          repository: juce-framework/JUCE
-          path: JUCE
-
-      - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -DJUCE_DIR="${{ github.workspace }}/JUCE"
-
-      - name: Build Release
-        run: cmake --build build --config Release
-
-      - name: Upload Windows build
-        uses: actions/upload-artifact@v4
-        with:
-          name: SkizoDroidLive-Windows
-          path: build/SkizoDroidLive_artefacts/Release/**
+          name: SkizoDroidLive-Windows-x64-Portable
+          path: SkizoDroidLive-Windows-x64-Portable.zip
+          if-no-files-found: error
+          retention-days: 30
