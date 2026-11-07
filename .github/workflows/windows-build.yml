@@ -35,10 +35,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = Get-ChildItem -Path build -Recurse -Filter SkizoDroidLive.exe -File |
-            Where-Object { $_.FullName -match '[\/]Release[\/]' } |
-            Select-Object -First 1
-          if (-not $exe) { throw 'SkizoDroidLive.exe not found in Release outputs' }
+          # JUCE PRODUCT_NAME creates 'SkizoDroid Live.exe' (with a space).
+          # Accept both the spaced product name and the target name.
+          $exe = Get-ChildItem -Path build -Recurse -Filter '*.exe' -File |
+            Where-Object {
+              $_.BaseName -in @('SkizoDroid Live', 'SkizoDroidLive') -and
+              $_.DirectoryName -match '[\\/]Release$'
+            } | Select-Object -First 1
+          if (-not $exe) { throw 'SkizoDroid Live EXE not found in Release outputs' }
+          Write-Host "Packaging: $($exe.FullName)"
           New-Item -ItemType Directory -Force package/SkizoDroidLive-Windows-x64 | Out-Null
           Copy-Item $exe.FullName package/SkizoDroidLive-Windows-x64/
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
