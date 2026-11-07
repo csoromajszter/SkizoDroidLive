@@ -1,12 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SkizoDroidLive VERSION 0.4.2 LANGUAGES C CXX)
+# Select the portable Windows C/C++ runtime BEFORE project() creates targets.
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "Static MSVC runtime" FORCE)
+
+project(SkizoDroidLive VERSION 0.9.7 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(DEFINED JUCE_DIR)
-    add_subdirectory(${JUCE_DIR} JUCE)
+    add_subdirectory("${JUCE_DIR}" JUCE)
 else()
     find_package(JUCE CONFIG REQUIRED)
 endif()
