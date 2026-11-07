@@ -520,7 +520,7 @@ bool MainComponent::readProjectXml()
 
     for (auto& scene : scenes)
         for (auto& clip : scene)
-            clip = {};
+            clip = juce::File();
 
     initialiseDefaults();
     songStepCount = 0;
@@ -1015,7 +1015,7 @@ void MainComponent::resetProjectData()
     clearAudioBanks();
     for (auto& scene : scenes)
         for (auto& clip : scene)
-            clip = {};
+            clip = juce::File();
 
     initialiseDefaults();
     selectedScene = 0;
@@ -1272,7 +1272,7 @@ void MainComponent::chooseLoopForTrack (int trackIndex)
 void MainComponent::clearClipForTrack (int trackIndex)
 {
     if (trackIndex < 0 || trackIndex >= numTracks) return;
-    scenes[selectedScene][trackIndex] = {};
+    scenes[selectedScene][trackIndex] = juce::File();
     ++bankRequestSerial;
     refreshTrackButtons();
     refreshSceneButtons();
@@ -1300,7 +1300,7 @@ void MainComponent::pasteSceneToSelected()
 
 void MainComponent::clearSelectedScene()
 {
-    for (auto& clip : scenes[selectedScene]) clip = {};
+    for (auto& clip : scenes[selectedScene]) clip = juce::File();
     refreshTrackButtons();
     refreshSceneButtons();
     if (projectFile != juce::File()) saveProject();
