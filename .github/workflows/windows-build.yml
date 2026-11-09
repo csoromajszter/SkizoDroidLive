@@ -1,3 +1,4 @@
+
 name: Build Windows Portable x64
 
 on:
@@ -15,6 +16,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Apply V0.9.8 Setlist Mode
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python scripts/apply_setlist.py
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Setlist integration failed'
+          }
 
       - name: Get JUCE
         shell: pwsh
