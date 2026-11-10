@@ -1,7 +1,6 @@
-
 #!/usr/bin/env python3
-"""Apply self-contained Setlist UI integration to SkizoDroid Live main branch.
-Fails closed if source layout changed; does not touch the audio engine.
+"""Apply V0.9.8 Setlist UI integration during CI build.
+Fails closed if source layout changed; leaves the audio engine untouched.
 """
 from pathlib import Path
 
@@ -11,11 +10,13 @@ cp = root / 'Source' / 'MainComponent.cpp'
 h = hp.read_text(encoding='utf-8')
 c = cp.read_text(encoding='utf-8')
 
+
 def replace_once(text, anchor, repl, name):
     occurrences = text.count(anchor)
     if occurrences != 1:
         raise RuntimeError(f'{name}: expected anchor once, found {occurrences}: {anchor[:80]}')
     return text.replace(anchor, repl, 1)
+
 
 if 'setlistModeButton' in h or 'setlistModeButton' in c:
     print('Setlist integration already present; nothing changed.')
@@ -34,31 +35,33 @@ c = replace_once(c,
 c = replace_once(c,
     '    songModeButton.onClick = [this] { setPerformanceMode (true); };',
     '''    songModeButton.onClick = [this] { setPerformanceMode (true); };
-    setlistModeButton.onClick = [this]
+    // Make the SafePointer before entering the callback, then copy it into
+    // the nested onOpenSong callback. This avoids capturing the wrong `this`.
+    setlistModeButton.onClick = [safeMain = juce::Component::SafePointer<MainComponent> (this)]
     {
         juce::DialogWindow::LaunchOptions options;
-        options.dialogTitle = "SkizoDroid Live – SETLIST MODE";
+        options.dialogTitle = "SkizoDroid Live - SETLIST MODE";
         options.dialogBackgroundColour = juce::Colour::fromRGB (22, 22, 26);
         options.escapeKeyTriggersCloseButton = true;
         options.useNativeTitleBar = true;
         options.resizable = true;
         options.content.setOwned (new SetlistPanel (
-            [safe = juce::Component::SafePointer<MainComponent> (this)] (const juce::File& file)
+            [safeMain] (const juce::File& file)
             {
-                if (safe == nullptr || ! file.existsAsFile()) return;
-                // V0.9.8 deliberately switches songs only when playback is stopped.
-                safe->stopAll();
-                safe->preloadPool.removeAllJobs (true, 10000);
-                safe->clearAudioBanks();
-                if (! safe->unpackProjectToWorkingFolder (file))
+                if (safeMain == nullptr || ! file.existsAsFile()) return;
+                // V0.9.8 switches songs only after stopping playback.
+                safeMain->stopAll();
+                safeMain->preloadPool.removeAllJobs (true, 10000);
+                safeMain->clearAudioBanks();
+                if (! safeMain->unpackProjectToWorkingFolder (file))
                 {
-                    safe->statusLabel.setText ("COULD NOT OPEN SETLIST SONG", juce::dontSendNotification);
+                    safeMain->statusLabel.setText ("COULD NOT OPEN SETLIST SONG", juce::dontSendNotification);
                     return;
                 }
-                safe->projectFile = file;
-                safe->rememberDirectory (file);
-                safe->updateProjectLabel();
-                safe->updateStatus();
+                safeMain->projectFile = file;
+                safeMain->rememberDirectory (file);
+                safeMain->updateProjectLabel();
+                safeMain->updateStatus();
             }));
         options.launchAsync();
     };''',
